@@ -70,8 +70,8 @@ instance/
 hf_cache/
 hf_cache_debug/
 
-checkpoints/metrics_plot.png
-checkpoints/debug_run/metrics_plot.png
+checkpoints/**/*.png
+
 
 # Scrapy stuff:
 .scrapy
@@ -226,3 +226,6 @@ processed_data/
 # For now, following user request strictly to ignore json
 *.json
 !benchmark_comparison_results.json
+# Keep all JSON files in baselines folder
+!baselines/*.json
+!baselines/**/*.json

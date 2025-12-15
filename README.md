@@ -1,59 +1,75 @@
-# Looking for a name for this LLM
+# 5-Dollar LLM (looking for a better name)
+
+> Training the best possible LLM from scratch for $5.
 
 **Open Superintelligence Lab** - Open research for everyone. We publish all of our research for the sake of accelerating science. Learn real AI research from a real research lab.
 
-### Goals
+---
 
-1. Create a network of contributors and open lab structure to develop the best LLMs.
-2. Get more compute for a large-scale LLM project that will compete with the best LLMs.
+## 🚀 Getting Started
 
-## Quick Start
+To get started with development, follow these steps to set up your environment.
+
+1. **Fork this repository** - Click the "Fork" button at the top right to create your own copy.
+2. **Clone your fork**:
+   ```bash
+   git clone FORK_URL_HERE
+   cd 5-dollar-llm
+   ```
+3. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+You may clone it with yout IDE as well.
+
+## ⚡ Quick Start
+
+Once installed, you can train a model using our default configurations.
+
+### Train on Custom Hardware (Recommend 24GB+ VRAM)
+To train the main MoE model (configured for a single 24GB GPU like an RTX 3090/4090):
 
 ```bash
-pip install -r requirements.txt
-
-
 python train_moe.py
 ```
 
-## Debugging
-
-To run a quick debug session with a tiny model (useful for verifying the training loop or checking for errors on any hardware):
+### Debugging (Any Hardware)
+To verify the training loop or check for errors on any hardware (including CPU/MPS), run the debug session:
 
 ```bash
 python debug_moe.py
 ```
+*Runs a `DebugMoEConfig` with a tiny model for 100 steps.*
 
-This uses a `DebugMoEConfig` with a very small model size and runs for only 100 steps.
+## 📊 Baselines
 
+We maintain baseline performance metrics to track improvements. All experiments should aim to surpass these benchmarks.
 
-## Hyperparameter Tuning
+### 24GB GPU Baseline (GPU24GBMoEModelConfig)
+*Hardware: Single Nvidia RTX 4090 (24GB)*
 
-To optimize training for your specific hardware or architecture changes, you can use the quick sweep tool:
+> You may train on other hardware.
 
-```bash
-python experiments/quick_sweep.py
-```
+| Metric | Value |
+| :--- | :--- |
+| **Validation Loss** | 4.0977 |
+| **Validation Accuracy** | 31.90% |
+| **Perplexity** | 60.20 |
 
-This script will:
-1.  Train the model with 3 different learning rates (0.5x, 1.0x, 2.0x) for 200 steps each.
-2.  Clean up large checkpoint files automatically, keeping only metrics.
-3.  Generate a comparison plot (`sweep_comparison.png`) to help you choose the best learning rate.
+![GPU 24GB Baseline Metrics](baselines/gpu_24gb/metrics_plot.png)
 
-You can then apply the best learning rate in `configs/moe_config.py`.
+*Full baseline results are stored in `baselines/gpu_24gb/`.*
 
+## 🤝 Contributing
 
-## Getting Started
+We welcome all contributions!
 
-1. **Fork this repository** - Click the "Fork" button at the top right of this page to create your own copy
-    > **Note**: If you cannot fork the repository (e.g., because you already have a fork), you can clone it locally, create a new empty repository on GitHub, and push the code there. You may ask ChatGPT for help.
-2. Clone your fork: `git clone URL_HERE`
-3. Install dependencies: `pip install -r requirements.txt`
-4. Read `CONTRIBUTING.md` for contribution guidelines
-5. Create your own experiment and merge it
-6. Explore the `experiments/` folder for ongoing research and inspiration
-7. Once you finish with your research, create a pull request to merge it back to this repo
+1. **Pick a task**: Check the [Issues](https://github.com/Open-Superintelligence-Lab/5-dollar-llm/issues) tab.
+2. **Implement**: Fork, clone, and work on your experiment.
+3. **Report**: Share results on Discord or the Issue thread. We may merge the full code or just the results.
 
-## Contributing
+Please read `CONTRIBUTING.md` for detailed guidelines.
 
-See `CONTRIBUTING.md` for guidelines on how to contribute to this project
+### Goals
+1. Create a network of contributors and open lab structure to develop state-of-the-art LLMs.
+2. Secure compute resources for a larger-scale LLM project to compete with top LLMs.
