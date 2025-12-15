@@ -80,14 +80,15 @@ def prepare_datasets(data_cfg, tokenizer):
     
     # Tokenize and save
     print("Tokenizing train set...")
-    data_cfg.save_to_disk = train_cache
     train_ds = finalize_dataset(tokenize_and_chunk(raw_train, tokenizer, data_cfg), data_cfg)
+    train_ds.save_to_disk(train_cache)
     
     print("Tokenizing validation set...")
-    data_cfg.save_to_disk = val_cache
     val_ds = finalize_dataset(tokenize_and_chunk(raw_val, tokenizer, data_cfg), data_cfg)
+    val_ds.save_to_disk(val_cache)
 
     # Save cache info
+    os.makedirs(cache_dir, exist_ok=True)
     with open(info_path, "w") as f:
         json.dump(config_state, f, indent=2)
     print("Saved dataset cache info.")

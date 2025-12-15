@@ -43,6 +43,21 @@ This script will:
 You can then apply the best learning rate in `configs/moe_config.py`.
 
 
+## Baselines
+
+We maintain baseline performance metrics to track improvements. All experiments should aim to surpass these baselines.
+
+### 24GB GPU Baseline (GPU24GBMoEModelConfig)
+
+Run on a single 24GB VRAM GPU (e.g., RTX 3090/4090).
+
+- **Validation Loss**: 4.0977
+- **Validation Accuracy**: 31.90%
+- **Perplexity**: 60.20
+
+Full baseline results (metrics and plots) are stored in `baselines/gpu_24gb/`.
+
+
 ## Getting Started
 
 1. **Fork this repository** - Click the "Fork" button at the top right of this page to create your own copy
