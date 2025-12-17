@@ -48,6 +48,8 @@ These samples capture the model's "personality" and capabilities at the 1B token
 > **Output**: Reverted to a repetitive list of German physicists from 1962-1973.
 
 ## 📜 Historical Context (GPT-1 Comparison)
+- **Hugging Face Model**: [vukrosic/Blueberry-Nano-151M](https://huggingface.co/vukrosic/Blueberry-Nano-151M)
+
 In 2018, OpenAI's GPT-1 changed the world with:
 - **Parameters**: 117M
 - **Training Data**: ~5GB (BookCorpus)
