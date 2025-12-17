@@ -39,6 +39,30 @@ Currently LLMs are the most useful AI models, so it's a clear way for us to do u
 
 ---
 
+## 🏎️ 1B Token Speedrun Challenge (Current Experiment)
+
+We are currently running a "speedrun" to train a **151M parameter model on 1 Billion tokens**.
+
+- **Dataset**: 1B tokens (70% FineWeb-Edu, 30% Cosmopedia).
+- **Time Estimate**: ~2 hours 40 minutes on a single RTX 4090.
+- **Goal**: Rapidly verify architecture changes before scaling.
+
+### How to Replicate
+The dataset takes hours to generate, so we recommend loading the pre-shuffled version directly from Hugging Face:
+
+```bash
+# 1. Clone repository
+git clone https://github.com/Open-Superintelligence-Lab/5-dollar-llm
+cd 5-dollar-llm
+
+# 2. Download Pre-Processed Data (Fast)
+python download_data.py
+
+# 3. Start Training
+python train_llm.py --dataset_path processed_data/pretrain_mix_1000000000
+```
+
+
 ## 🚀 Getting Started & Contributing
 
 We welcome all contributions! Follow this workflow to get started:
