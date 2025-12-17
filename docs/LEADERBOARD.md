@@ -8,7 +8,7 @@
 
 | # | Date | Time | Tokens Used | User | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1** | 2025-12-17 | 1m 5s | 6,553,600 | [vukrosic](https://x.com/VukRosic99) | Baseline |
+| **1** | 2025-12-17 | 1m 4s | 2,457,600 | [vukrosic](https://x.com/VukRosic99) | Optimized Baseline (LR 0.02, GradAcc 1) |
 
 ## 🎯 Best Loss @ 67M Tokens
 *Goal: Lowest Validation Loss after 67,000,000 Training Tokens*
