@@ -159,6 +159,8 @@ def main():
     parser.add_argument("--load_checkpoint", type=str, help="Path to checkpoint file to load weights from (for fine-tuning)")
     parser.add_argument("--compile", type=str, help="Whether to compile the model (true/false)")
     parser.add_argument("--dataset_path", type=str, help="Path to preprocessed dataset directory")
+    parser.add_argument("--eval_every", type=int, help="Override eval_every steps")
+    parser.add_argument("--save_every", type=int, help="Override save_every steps")
     args = parser.parse_args()
 
     # Load Config
@@ -186,6 +188,10 @@ def main():
         config.max_steps = args.max_steps
     if args.compile is not None:
         config.compile_model = (args.compile.lower() == "true")
+    if args.eval_every is not None:
+        config.eval_every = args.eval_every
+    if args.save_every is not None:
+        config.save_every = args.save_every
     
     experiment_name = args.experiment_name
     output_dir = os.path.join(args.output_dir, experiment_name)
