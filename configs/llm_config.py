@@ -112,6 +112,19 @@ class Blueberry24GBConfig(Blueberry80GBConfig):
     # Training defaults
     batch_size: int = 4
     compile_model: bool = True
+    gradient_accumulation_steps: int = 12 
+    
+    # Checkpointing
+    save_every: int = 1000
+    
+    # Learning Rate (Aggressive for pre-training)
+    muon_lr: float = 0.003       # Slightly lower than extreme, safe start
+    adamw_lr: float = 0.0003
+    warmup_ratio: float = 0.01  # Fast warmup
+
+    # H100 Settings (Uncomment to use)
+    # batch_size: int = 128
+    # gradient_accumulation_steps: int = 16
     
     def __post_init__(self):
         super().__post_init__()

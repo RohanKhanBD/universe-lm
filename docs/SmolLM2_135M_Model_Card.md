@@ -55,7 +55,7 @@ This creates a mixed dataset from:
 **Training**
 ```bash
 python train_llm.py \
-  --config_class configs.pretrain_config.PretrainConfig \
+  --config_class configs.llm_config.Blueberry24GBConfig \
   --dataset_path ./processed_data/pretrain_mix_100000000 \
   --experiment_name pretrain_100m \
   --max_steps 1000
@@ -90,7 +90,7 @@ python data/prepare_mix_data.py --target_tokens 1000000
 
 # 2. Test training (5 steps)
 python train_llm.py \
-  --config_class configs.pretrain_config.PretrainConfig \
+  --config_class configs.llm_config.Blueberry24GBConfig \
   --dataset_path ./processed_data/pretrain_mix_1000000 \
   --experiment_name test_run \
   --max_steps 5
@@ -131,9 +131,9 @@ ds = ds.map(download_contents, input_columns="blob_id")
 
 ## Configuration Files
 
-- **`configs/pretrain_config.py`**: Pretraining hyperparameters (aggressive LR)
+- **`configs/llm_config.py`**: Base model architecture (135M parameters) and Pretraining config
 - **`configs/sft_config.py`**: SFT hyperparameters (10x lower LR to preserve knowledge)
-- **`configs/llm_config.py`**: Base model architecture (135M parameters)
+
 - **`configs/dataset_config.py`**: Dataset loading configuration
 
 ### Key Hyperparameters

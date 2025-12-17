@@ -61,7 +61,7 @@ def main():
     
     cmd_stage1 = (
         f"python train_llm.py "
-        f"--config_class configs.pretrain_config.PretrainConfig "
+        f"--config_class configs.llm_config.Blueberry24GBConfig "
         f"--dataset_path {pretrain_data} "
         f"--experiment_name stage1_pretrain_100m "
         f"--max_steps 1000"
