@@ -2,6 +2,8 @@
 
 > Training is run on 1x4090 RTX.
 
+Model size must stay within ±5% of 151M parameters (approximately 143M–159M).
+
 ## ⚡ Fastest To 6.7 Train Loss
 *Goal: Fastest Time to Reach Loss ≤ 6.7*
 > Everyone is GPU poor, let's make every FLOP count.
