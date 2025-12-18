@@ -13,12 +13,15 @@
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **1** | 2025-12-18 | **3m 2s** | **6,086,656** | [Vuk Rosić](https://x.com/VukRosic99) | Optimized Config (LR 0.015, Warmup 0, Constant, GradAcc 1) + [Per-step check] |
 
-## ⚡ Fastest To 4 Train Loss
-*Goal: Fastest Time to Reach Loss ≤ 4*
+> First benchmark is faster to itterate. Every few records we can search and combine them to see what transfers to the longer training well.
+
+
+## ⚡ Fastest To 3.5 Train Loss
+*Goal: Fastest Time to Reach Loss ≤ 3.5*
 
 | # | Date | Time | Tokens Used | User | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-
+| **1** | 2025-12-18 | **9m 7s** | **18,767,872** | [Vuk Rosić](https://x.com/VukRosic99) | Optimized Config (LR 0.015, Warmup 0, Constant, GradAcc 1) + [Per-step check] |
 
 
 ## 🏅 The 1B Marathon (World Record)
