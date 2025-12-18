@@ -20,13 +20,15 @@ To qualify for the **Speedrun** (4.5 loss / 3.5 loss / 1B tokens) leaderboard, y
 
 ## ⚡ Fastest To 4.5 Train Loss
 *Goal: Fastest Time to Reach Loss ≤ 4.5*
-> Everyone is GPU poor, let's make every FLOP count.
+> First benchmark is faster to experiment on. We can later find what transfers to the longer training.
 
 | # | Date | Time | Tokens Used | User | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1** | 2025-12-18 | **2m 31s** | **6,537,216** | [Vuk Rosić](https://x.com/VukRosic99) | Optimized Config (LR 0.015, Warmup 0, Constant, GradAcc 1) + [Per-step check] |
+| **1** | 2025-12-18 | **2m 30s** | **6,537,216** | [Vuk Rosić](https://x.com/VukRosic99) | Optimized Config (LR 0.015, Warmup 0, Constant, GradAcc 1) + [Per-step check] |
 
-> First benchmark is faster to itterate. Every few records we can search and combine them to see what transfers to the longer training well.
+> **Noise**: 6 identical runs: ~2m 30s to 2m 31s. New records must be ≤ 2m 29s.
+
+
 
 
 ## ⚡ Fastest To 3.5 Train Loss
