@@ -111,6 +111,9 @@ def train_model(
         schedulers = []
 
     # Training metrics tracking
+    # Synchronize CUDA to ensure accurate timing (no queued operations)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     train_start_time = time.time()
     metrics_history = {
         'steps': [],
@@ -297,6 +300,9 @@ def train_model(
                 'val_perplexity': perplexity if 'perplexity' in locals() else 0.0,
             }
     
+    # Synchronize CUDA to ensure all operations are complete before ending timer
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     total_time_seconds = time.time() - train_start_time
     
     if stopped_early:
@@ -583,6 +589,10 @@ def train_minimal_llm(
     # ============================================
     # 9. Train from scratch (fresh iterator created internally)
     # ============================================
+    # Clear GPU cache and synchronize to ensure consistent starting state
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
     train_start = time.time()
     
     results = train_model(

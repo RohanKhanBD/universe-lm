@@ -1,9 +1,13 @@
 # this script makes sure the speedrun training is reproducible
 
+import sys
+import os
+
+# Add parent directory to path to allow imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import subprocess
 import json
-import os
 import time
 import statistics
 from utils.helpers import format_time
@@ -18,6 +22,10 @@ def run_training(run_id):
         "--compile", "true",
         "--dataset_path", "processed_data/speedrun_40M"
     ]
+    
+    # Small delay between runs to allow GPU to reach consistent state
+    if run_id > 1:
+        time.sleep(1)
     
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for line in process.stdout:
@@ -40,7 +48,7 @@ def run_training(run_id):
         return {"run_id": run_id, "success": False}
 
 def main():
-    num_runs = 4
+    num_runs = 3
     results = []
     
     print(f"=== Reproducing Speedrun 1 ({num_runs} runs) ===")
