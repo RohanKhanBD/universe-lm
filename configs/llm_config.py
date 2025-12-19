@@ -47,8 +47,3 @@ class BlueberryConfig:
         self.d_k = self.d_model // self.n_heads
         assert self.d_model % self.n_heads == 0, "d_model must be divisible by n_heads"
 
-
-@dataclass
-class Blueberry24GBConfig(BlueberryConfig):
-    # Optimized for RTX 4090 (24GB)
-    pass
