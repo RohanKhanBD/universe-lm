@@ -21,6 +21,9 @@ cd 5-dollar-llm
 pip install -r requirements.txt
 ```
 
+### 🍏 Mac (Apple Silicon)
+Rent a [Free/Paid GPU](LEADERBOARD.md#🤝-gpus-free--paid) at the bottom of the [leaderboard](LEADERBOARD.md#🤝-gpus-free--paid).
+
 ### Option A: Quick Start (40M Tokens) - Recommended for Speedruns
 Perfect for hitting the 4.5 and 3.5 loss milestones. Downloads in seconds.
 ```bash

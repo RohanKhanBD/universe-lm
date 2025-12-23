@@ -43,6 +43,9 @@ python train_llm.py --target_train_loss 4.5
 
 👉 **[Full Setup Guide](docs/SETUP_INSTRUCTIONS.md)** | **[Leaderboard](docs/LEADERBOARD.md)** | **[Contributing Guide](docs/CONTRIBUTING.md)**
 
+### 🍏 Running on Mac?
+Rent a [Free/Paid GPU](LEADERBOARD.md#🤝-gpus-free--paid) at the bottom of the [leaderboard](LEADERBOARD.md#🤝-gpus-free--paid).
+
 ---
 
 ## 🤝 Partners & Support
