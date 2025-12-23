@@ -17,21 +17,7 @@ We will partner for compute while keeping all research/engineering/code fully op
 
 ---
 
-> It is best to read the Quick Start directly in the tasks linked above.
-
-## 🏎️ Quick Start
-```bash
-git clone https://github.com/Open-Superintelligence-Lab/5-dollar-llm
-cd 5-dollar-llm
-pip install -r requirements.txt
-python data/download_hf_data.py   # Downloads 40M token subset
-python train_llm.py
-```
-
 👉 **[Full Setup Guide](docs/SETUP_INSTRUCTIONS.md)** | **[Leaderboard](docs/LEADERBOARD.md)** | **[Contributing Guide](docs/CONTRIBUTING.md)**
-
-### 🍏 Running on Mac?
-Rent a [Free/Paid GPU](LEADERBOARD.md#🤝-gpus-free--paid) at the bottom of the [leaderboard](LEADERBOARD.md#🤝-gpus-free--paid).
 
 ---
 
