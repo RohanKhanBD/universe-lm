@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import math
 import time
 import json
-import matplotlib.pyplot as plt
+import json
 from pathlib import Path
 from torch.utils.data import DataLoader
 from torch.amp import autocast
@@ -80,7 +80,6 @@ def train_model(
     schedulers: Optional[List] = None,
     early_stopper: Optional[EarlyStopping] = None,
     output_dir: Optional[str] = None,
-    plot_fn: Optional[Callable] = None,
     extra_config: Optional[Dict[str, Any]] = None,
     log_every: int = 100,
 ) -> Any:
@@ -96,7 +95,6 @@ def train_model(
         schedulers: Optional list of learning rate schedulers
         early_stopper: Optional early stopping handler
         output_dir: Optional directory to save outputs
-        plot_fn: Optional custom plotting function(metrics_history, output_path)
         extra_config: Optional dict of extra config to save with metrics
     
     Returns:
@@ -334,11 +332,6 @@ def train_model(
             json.dump(metrics_data, f, indent=2)
         print(f"   📁 Metrics saved to {metrics_file}")
         
-        # Plot metrics using custom function or default
-        if plot_fn:
-            plot_fn(metrics_history, output_path)
-        else:
-            plot_training_metrics(metrics_history, output_path)
         
         # Save model checkpoint
         checkpoint_path = output_path / "model.pt"
@@ -361,61 +354,6 @@ def train_model(
     }
 
 
-def plot_training_metrics(metrics_history: Dict, output_path: Path):
-    """Default plotting function for training metrics"""
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('Training Metrics', fontsize=14, fontweight='bold')
-    
-    # Plot 1: Val Loss vs Time
-    ax = axes[0, 0]
-    ax.plot(metrics_history['elapsed_times'], metrics_history['val_losses'], 'b-o', linewidth=2, markersize=4)
-    ax.set_xlabel('Time (minutes)')
-    ax.set_ylabel('Validation Loss')
-    ax.set_title('Validation Loss vs Time')
-    ax.grid(True, alpha=0.3)
-    
-    # Highlight best point
-    if metrics_history['val_losses']:
-        best_idx = metrics_history['val_losses'].index(min(metrics_history['val_losses']))
-        ax.plot(metrics_history['elapsed_times'][best_idx], 
-                metrics_history['val_losses'][best_idx], 
-                'r*', markersize=15, label=f'Best: {metrics_history["val_losses"][best_idx]:.4f}')
-        ax.legend()
-    
-    # Plot 2: Val Loss vs Steps
-    ax = axes[0, 1]
-    ax.plot(metrics_history['steps'], metrics_history['val_losses'], 'g-o', linewidth=2, markersize=4)
-    ax.set_xlabel('Training Steps')
-    ax.set_ylabel('Validation Loss')
-    ax.set_title('Validation Loss vs Steps')
-    ax.grid(True, alpha=0.3)
-    if metrics_history['val_losses']:
-        best_idx = metrics_history['val_losses'].index(min(metrics_history['val_losses']))
-        ax.plot(metrics_history['steps'][best_idx], 
-                metrics_history['val_losses'][best_idx], 
-                'r*', markersize=15)
-    
-    # Plot 3: Val Accuracy vs Steps
-    ax = axes[1, 0]
-    ax.plot(metrics_history['steps'], metrics_history['val_accuracies'], 'purple', linewidth=2, marker='o', markersize=4)
-    ax.set_xlabel('Training Steps')
-    ax.set_ylabel('Validation Accuracy')
-    ax.set_title('Validation Accuracy vs Steps')
-    ax.grid(True, alpha=0.3)
-    
-    # Plot 4: Learning Rate vs Steps
-    ax = axes[1, 1]
-    ax.plot(metrics_history['steps'], metrics_history['learning_rates'], 'orange', linewidth=2)
-    ax.set_xlabel('Training Steps')
-    ax.set_ylabel('Learning Rate')
-    ax.set_title('Learning Rate Schedule')
-    ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plot_path = output_path / "metrics_plot.png"
-    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    print(f"   📊 Plots saved to {plot_path}")
 
 def warmup_compiled_kernels(
     model: nn.Module,
@@ -609,7 +547,6 @@ def train_minimal_llm(
         schedulers=schedulers,
         early_stopper=None,
         output_dir=None,
-        plot_fn=None,
         extra_config=None,
         log_every=getattr(config, 'log_every', 100),
     )
@@ -650,8 +587,6 @@ def train_minimal_llm(
             'metrics': final_eval,
         }, checkpoint_path)
         
-        # Plot
-        plot_training_metrics(metrics_history, output_path)
     
     # Final Output
     print("\n" + "="*70)
