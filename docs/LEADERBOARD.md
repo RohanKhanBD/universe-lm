@@ -55,15 +55,3 @@ Please read [SETUP_INTRUCTIONS](docs/SETUP_INSTRUCTIONS.md) for detailed guide.
 | 1 | 2025-12-23 | 3.4747 | 3.3580 | 2h 51m 31s | 1,000,007,680 | [Vuk Rosić](https://x.com/VukRosic99), [ToheedAkhtar01](https://x.com/ToheedAkhtar01), [GitHub #67](https://github.com/Open-Superintelligence-Lab/5-dollar-llm/pull/67/), [GitHub #56](https://github.com/Open-Superintelligence-Lab/5-dollar-llm/pull/56) | n_layers 32→22, optimized LRs (Muon 0.024, AdamW 0.006), Squared ReLU, Fused AdamW, Polar Muon|
 
 This result is confirmed again: 2h 50m 55s, train loss: 3.4917, val loss: 3.3583
-
-
-## 🤝 GPUs: Free & Paid
-**You may rent 4090 affordably at**
-[Salad](https://salad.com/pricing) | [Novita](https://novita.ai/pricing?gpu=1) [(or use our affiliate to help us get more compute ❤️)](https://novita.ai/?ref=mjqyndm&utm_source=affiliate) | [VastAI](https://vast.ai/pricing) - A lot of GPU providers also give 50% off on spot billing.
-
-**Free GPU Alternatives:**
-- **Lightning AI**: You can use the free **L4 GPU**.
-- **Google Colab**: Use the free T4 or paid A100.
-- **Tip**: If the model doesn't fit in your GPU memory, you can **reduce the model size** (e.g., reduce `batch_size`, `n_layer`, or `n_embd` in `configs/llm_config.py`).
-
-Once you create improvement, we will measure it on 4090.
