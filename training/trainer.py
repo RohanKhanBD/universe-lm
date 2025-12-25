@@ -431,6 +431,7 @@ def train_minimal_llm(
     val_loader: DataLoader,
     output_dir: Optional[str] = None,
     load_weights_path: Optional[str] = None,
+    compare_baseline: bool = False,
 ):
     print(f"\n🚀 Training dense model")
     setup_start = time.time()
@@ -594,25 +595,26 @@ def train_minimal_llm(
         json.dump(metrics_data, f, indent=2)
     print(f"   📊 Metrics saved to {metrics_file}")
         
-    # Generate and save validation loss plot
     try:
         from utils.plot_loss import plot_loss
         
-        # Determine closest baseline file based on token count
-        known_baselines = {
-            8_000_000: "plots/8M.json",
-            20_000_000: "plots/20M.json",
-            100_000_000: "plots/100M.json"
-        }
-        
-        # Find closest baseline
-        closest_tokens = min(known_baselines.keys(), key=lambda x: abs(x - config.train_tokens))
-        baseline_file = known_baselines[closest_tokens]
-        
-        # Verify it exists
-        if not os.path.exists(baseline_file):
-            print(f"      (Baseline file {baseline_file} not found locally)")
-            baseline_file = None
+        baseline_file = None
+        if compare_baseline:
+            # Determine closest baseline file based on token count
+            known_baselines = {
+                8_000_000: "plots/8M.json",
+                20_000_000: "plots/20M.json",
+                100_000_000: "plots/100M.json"
+            }
+            
+            # Find closest baseline
+            closest_tokens = min(known_baselines.keys(), key=lambda x: abs(x - config.train_tokens))
+            baseline_file = known_baselines[closest_tokens]
+            
+            # Verify it exists
+            if not os.path.exists(baseline_file):
+                print(f"      (Baseline file {baseline_file} not found locally)")
+                baseline_file = None
             
         plot_loss(
             str(metrics_file), 
