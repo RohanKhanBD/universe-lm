@@ -1,48 +1,32 @@
-# 5-Dollar LLM (Blueberry 88M)
+# LLM Research Kit
 
-Help us build top 10 LLM in the world while keeping it fully open source, which will accelerate everyone and everything that uses LLMs (science, technology, medicine, startups, businesses, etc.)
+A high-performance codebase for LLM research, pretraining, and optimization.
 
-> Check out our contributors [leaderboard](docs/LEADERBOARD.md)!
+## 🗺️ Project Goals
 
-## 🗺️ Open Superintelligence Lab Roadmap
-
-**Our goals:**
-1. **GPT-1** Level - Dec 20 2025 ✓ [Watch](https://youtu.be/1nf6mVNN2lo)
-2. **GPT-2** Level - next
+This repository provides a clean, efficient, and reproducible environment for experimenting with Large Language Models. Whether you are testing new architectures, optimizers, or data strategies, this kit is designed to scale from small experiments to large-scale pretraining.
 
 ---
 
-Can you make our LLM train faster and better?
+## 🚀 Getting Started
 
-We keep the contributions scintifically rigurous. See **[Contributing Guidelines](docs/CONTRIBUTING.md)**.
+To set up your environment and start training, please follow the **[Full Setup Guide](docs/SETUP_INSTRUCTIONS.md)**.
 
-👉 **[Full Setup Guide](docs/SETUP_INSTRUCTIONS.md)** | **[Leaderboard](docs/LEADERBOARD.md)**
+We follow scientifically rigorous research practices. See **[Contributing Guidelines](docs/CONTRIBUTING.md)** for more details.
 
 ---
 
-## Acceptance criteria:
+## 🛠 Features
 
-For the code to be accepted it must be **measured** and **break the record**. 🚀
-
-If we just add more features / code / architectures but records aren't getting broken, there is no progress. 📉
-
-> [!IMPORTANT]
-> Consider **more code = bad** (complexity, bloat, maintenance, bugs when upgrading), unless there is a new record in the training speed / loss, which justifies adding code. ✨
-
-0. Once you measure an improvement over the baseline according to the [Setup Guide](docs/SETUP_INSTRUCTIONS.md), submit your code in a GitHub pull request.
-1. The LLM must train faster or achieve lower loss on any of the benchmarks (8M, 20M, 100M, 1B tokens).
-2. Lower loss takes priority over training speed because pretraining data is limited - if your submission trains slower but achieves better (lower) loss for the same amount of tokens, it will probably be accepted, and vice versa.
-3. Add as little code as possible, keep it clean, rewrite AI generated pull request descriptions to increase quality.
-4. Submissions are judged case by case, tradeoffs between speed / loss etc. will be taken into account.
+- **High-Performance Training**: Optimized for speed and efficiency using modern PyTorch features.
+- **Reproducibility**: Built-in tools to ensure experiments are consistent across different runs.
+- **Modular Design**: Easily swap out models, optimizers, and datasets.
+- **Benchmarking**: Standardized benchmarks to measure progress.
 
 ---
 
 ## 🤝 Partners & Support
 
-**If you want to write a research paper improving this project, or if you or someone you know has extensive research experience and wants to contribute to this open-source initiative, contact me.**
+**If you want to collaborate on research or contribute to this open-source initiative, please reach out.**
 
-We will partner with compute providers while keeping all research/engineering/code fully open source.
-
-**Potential partners include:** Hugging Face, NVIDIA, Microsoft, Google, Amazon, Meta, IBM, Oracle, Alibaba, Tencent, Huawei, Baidu, CoreWeave, Lambda Labs, Hyperbolic, Stability AI, OpenAI, Anthropic, xAI, Cohere, Mistral AI, Graphcore, Tenstorrent, Intel, AMD, Dell Technologies, ai2, a16z, Sequoia Capital, and more.
-
-
+We work with various partners to provide compute and resources for open-source research.

@@ -4,10 +4,10 @@ import torch.nn.functional as F
 import math
 from torch.utils.data import DataLoader
 from torch.amp import autocast
-from configs.llm_config import BlueberryConfig
+from configs.llm_config import LLMConfig
 
 
-def evaluate_model(model: nn.Module, val_loader: DataLoader, config: BlueberryConfig):
+def evaluate_model(model: nn.Module, val_loader: DataLoader, config: LLMConfig):
     """Evaluate model performance"""
     model.eval()
     total_loss = 0
