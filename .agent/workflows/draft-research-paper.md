@@ -44,8 +44,8 @@ Follow these steps to turn a research idea into a structured paper from scratch:
     - Save the final improved paper to the `docs/papers/` directory.
     - Name the file based on the research idea (e.g., `curvature_aware_muon.md`).
 
-10. **Verification & Approval**:
+10. **Automated Transition**:
     - Confirm the file has been created.
     - Provide a summary of the final improvements.
-    - **MANDATORY**: Explicitly ask the user for approval of the paper draft.
-    - **CRITICAL**: Do NOT generate any code or implement the ideas until the human user has reviewed the paper and provided explicit approval to proceed with coding.
+    - Immediately proceed to the `@/implement-and-test` workflow to realize the research idea.
+
