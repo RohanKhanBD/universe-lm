@@ -2,15 +2,9 @@
 
 A high-performance codebase for LLM research, pretraining, and optimization: testing new architectures, optimizers, or data strategies.
 
----
-
-## ✨ Key Features
-
 - Modular transformer with GQA, RoPE, and RMSNorm
 - Muon optimizer alongside AdamW
 - Training script, flexible configuration
-
-## 🏗️ Project Structure
 
 - `models/`: Transformer layers and components (RoPE, RMSNorm, Multi-Head Attention).
 - `optimizers/`: Muon optimizer (outperforms AdamW and all others).
