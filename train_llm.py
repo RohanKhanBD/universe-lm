@@ -202,6 +202,19 @@ def prepare_datasets(data_cfg, tokenizer, cache_dir="./processed_data"):
     return train_ds, val_ds
 
 
+def build_eval_milestones(train_tokens: int) -> tuple[int, ...]:
+    """Return denser validation checkpoints for longer baseline runs."""
+    if train_tokens <= 8_000_000:
+        return (0, 25, 50, 75, 100, 150, 200, 300, 400)
+    if train_tokens <= 25_000_000:
+        return (0, 50, 100, 200, 300, 400, 500, 750, 1000, 1250, 1500)
+    if train_tokens <= 50_000_000:
+        return (0, 100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000)
+    if train_tokens <= 100_000_000:
+        return (0, 250, 500, 1000, 1500, 2000, 3000, 4000, 5000, 6000)
+    return (0, 500, 1000, 2000, 4000, 8000, 12000, 20000, 30000, 40000, 50000)
+
+
 def main():
     global _GLOBAL_SEED
     logger = setup_logging(log_dir="./logs")
@@ -294,27 +307,21 @@ def main():
     if args.log_every is not None:
         config.log_every = args.log_every
     
-    # Define custom milestones for validation curves and autosetup logging
-    # For 8M benchmark (approx 488 steps)
-    if config.train_tokens <= 8000000:
-        config.eval_milestones = (0, 50, 100, 150, 200, 300, 400)
+    # Define custom milestones for validation curves and autosetup logging.
+    # These are denser than the old schedule so future runs produce better
+    # learning-curve plots without changing any finished runs.
+    config.eval_milestones = build_eval_milestones(config.train_tokens)
+    if config.train_tokens <= 8_000_000:
+        config.log_every = 25
+    elif config.train_tokens <= 25_000_000:
         config.log_every = 50
-        config.eval_every = None  # Only use milestones
-    # For 20M benchmark (approx 1220 steps)
-    elif config.train_tokens <= 20000000:
-        config.eval_milestones = (0, 100, 250, 500, 750, 1000)
+    elif config.train_tokens <= 50_000_000:
         config.log_every = 100
-        config.eval_every = None
-    # For 100M benchmark (approx 6100 steps)
-    elif config.train_tokens <= 100000000:
-        config.eval_milestones = (0, 500, 1000, 2000, 3000, 4000, 5000)
+    elif config.train_tokens <= 100_000_000:
         config.log_every = 250
-        config.eval_every = None
-    # For 1B benchmark (approx 61000 steps)
     else:
-        config.eval_milestones = (0, 1000, 5000, 10000, 20000, 30000, 40000, 50000)
         config.log_every = 1000
-        config.eval_every = None
+    config.eval_every = None
     
     # Allow command line override ONLY if explicitly provided (argparse default check)
     if args.log_every != 100: # 100 is the default in parser

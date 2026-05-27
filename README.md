@@ -21,6 +21,14 @@ pip install -r requirements.txt
 
 ### Step 2: Download the Dataset
 
+The simplest path is:
+
+```bash
+python data/download_hf_data.py
+```
+
+If you are training on a remote GPU, start the run inside `tmux` so the job keeps running after you disconnect.
+
 ### Option A: 1B tokens
 ```bash
 python3 -c "
