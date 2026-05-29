@@ -89,6 +89,29 @@ class FastResearchConfig(LLMConfig):
 
 
 @dataclass
+class TwoStepDebugConfig(LLMConfig):
+    """Two-step debug preset: smallest possible run to test plumbing fast.
+
+    Not for science — just verifies the pipeline end-to-end (on a MacBook or
+    anywhere) in seconds. batch_size=1 + compile off keeps memory/startup
+    minimal. Floor is train_tokens=2048 (one step at seq 2048, which the data is
+    chunked at); 4096 = 2 steps so you can see loss move. 500 tokens = 0 steps.
+    """
+
+    d_model: int = 64
+    n_heads: int = 2
+    n_layers: int = 2
+    d_ff: int = 256
+    n_kv_heads: int = 1
+    max_seq_len: int = 2048   # must match the pre-chunked data; do not lower
+    train_tokens: int = 4096  # 2 steps at batch_size=1
+    batch_size: int = 1
+    compile_model: bool = False
+    activation_variant: str = "squared_relu"
+    activation_slope: float = 0.5
+
+
+@dataclass
 class UniverseSmokeConfig(LLMConfig):
     """v0.0 smoke release: ~15M params, short MacBook-friendly run."""
 

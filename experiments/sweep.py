@@ -20,6 +20,7 @@ from configs.llm_config import (
     LLMConfig,
     ResearchConfig,
     FastResearchConfig,
+    TwoStepDebugConfig,
     UniverseSmokeConfig,
     FiveMillionConfig,
     TwentyFiveMillionConfig,
@@ -38,6 +39,7 @@ PRESET_MAP = {
     "default": LLMConfig,
     "research": ResearchConfig,
     "fast_research": FastResearchConfig,
+    "debug": TwoStepDebugConfig,
     "smoke": UniverseSmokeConfig,
     "5m": FiveMillionConfig,
     "25m": TwentyFiveMillionConfig,
@@ -49,12 +51,15 @@ PRESET_MAP = {
 }
 
 
-def resolve_config(base_preset: str, train_tokens: int, seed: int, variant_name: str, overrides: dict) -> LLMConfig:
+def resolve_config(base_preset: str, train_tokens: int | None, seed: int, variant_name: str, overrides: dict) -> LLMConfig:
     """Build a resolved config for one variant."""
     if base_preset not in PRESET_MAP:
         raise ValueError(f"Unknown preset '{base_preset}'. Available: {list(PRESET_MAP.keys())}")
     config = PRESET_MAP[base_preset]()
-    config.train_tokens = train_tokens
+    # Only override train_tokens when the sweep explicitly sets it; otherwise
+    # respect the preset's own default (e.g. debug preset = 4096 = 2 steps).
+    if train_tokens is not None:
+        config.train_tokens = train_tokens
     config.seed = seed
     for key, val in overrides.items():
         if hasattr(config, key):
@@ -226,13 +231,13 @@ def run_sweep(yaml_path: str, dry_run: bool = False) -> list[dict]:
 
     sweep_name = Path(yaml_path).stem
     base_preset = sweep_cfg["base_preset"]
-    train_tokens = sweep_cfg.get("train_tokens", 100_000_000)
+    train_tokens = sweep_cfg.get("train_tokens")  # None -> use preset default
     seed = sweep_cfg.get("seed", 42)
     variants = sweep_cfg.get("variants", [])
 
     print(f"\nSweep: {sweep_name}")
     print(f"  base_preset : {base_preset}")
-    print(f"  train_tokens: {train_tokens:,}")
+    print(f"  train_tokens: {train_tokens:,}" if train_tokens is not None else "  train_tokens: (preset default)")
     print(f"  seed        : {seed}")
     print(f"  variants    : {len(variants)}")
 
