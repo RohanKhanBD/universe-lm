@@ -223,29 +223,3 @@ class OneBillionConfig(LLMConfig):
     train_tokens: int = 20_000_000_000  # ~20x params
     activation_variant: str = "squared_relu"
     activation_slope: float = 0.5
-
-
-def make_config(d_model: int, n_layers: int, *, head_dim: int = 64,
-                gqa_ratio: int = 4, ff_mult: float = 4.0,
-                max_seq_len: int = 2048, vocab_size: int = 49152,
-                **overrides) -> LLMConfig:
-    """Generate a config from a few shape knobs, deriving the rest from ratios.
-
-    The future-proofing primitive: new sizes (0.5B, 1B, ...) are just different
-    (d_model, n_layers) here -- heads/KV/FFN follow fixed ratios, so the named
-    presets above are simply pinned points on this curve. Any LLMConfig field
-    can be set via **overrides (e.g. train_tokens=..., muon_lr=...).
-    """
-    assert d_model % head_dim == 0, "d_model must be divisible by head_dim"
-    n_heads = d_model // head_dim
-    n_kv_heads = max(1, n_heads // gqa_ratio)
-    while n_heads % n_kv_heads != 0:   # GQA requires n_kv_heads | n_heads
-        n_kv_heads -= 1
-    cfg = LLMConfig(
-        d_model=d_model, n_heads=n_heads, n_layers=n_layers,
-        d_ff=int(ff_mult * d_model), n_kv_heads=n_kv_heads,
-        max_seq_len=max_seq_len, vocab_size=vocab_size,
-    )
-    for k, v in overrides.items():
-        setattr(cfg, k, v)
-    return cfg
