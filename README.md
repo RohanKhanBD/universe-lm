@@ -16,7 +16,9 @@ A high-performance codebase for LLM research, pretraining, and optimization: tes
 
 ## 🏁 The Speedrun
 
-One race: **lowest val loss training a 135M model on 2.7B tokens** (chinchilla-optimal). Clone, train, report — beat the record. ~1.5–2.5 h, ~$3–6/entry. Pinned: `seed=42`, bf16.
+**Race to train the best 10M LLM in ~33 minutes — every win builds toward a fully-open 135M model that beats [SmolLM2-135M](https://huggingface.co/HuggingFaceTB/SmolLM2-135M).**
+
+One race: **lowest val loss on a 10M-param model trained on 200M tokens** (`--config 10m`). Clone, train, beat the standing record (currently **5.015**) — ~33 min on a single consumer GPU. Pinned: `seed=42`, bf16; a new record must beat the best by **≥0.01**. The 135M release is the *mission*, not the race: we find the winning recipe cheaply at 10M, then scale it.
 
 See the [**leaderboard**](LEADERBOARD.md) and [how to enter](CONTRIBUTING.md).
 
