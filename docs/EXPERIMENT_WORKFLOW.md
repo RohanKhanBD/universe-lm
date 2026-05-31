@@ -38,6 +38,22 @@ For one-GPU sweeps that need a few jobs in sequence, use
 order, waits for `train_llm.py` to go idle between jobs, and supports a pause
 step when you want to stop for a human decision before continuing.
 
+Minimal queue file:
+
+```jsonl
+{"name":"screen10m_swiglu","cmd":"python train_llm.py --config_class ..."}
+{"kind":"pause","name":"review","message":"check the first result, then continue"}
+{"name":"screen10m_zero_init","cmd":"python train_llm.py --config_class ..."}
+```
+
+Typical launch:
+
+```bash
+tmux new -s quick_queue \
+  "/venv/main/bin/python3 scripts/run_job_queue.py --queue queues/my_queue.jsonl \
+   --status-log logs/my_queue_status.log --log-dir logs/my_queue"
+```
+
 ---
 
 ## Lifecycle: branches are temporary, tags are the archive
