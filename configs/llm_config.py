@@ -259,6 +259,44 @@ class Screen10M20MOutputEmbedConfig(Screen10M20MConfig):
     use_output_embed: bool = True
 
 
+@dataclass
+class Screen10M20MVQKEmbedConfig(Screen10M20MConfig):
+    """Screen10M20M with token value + query + key embeddings injected into attention.
+
+    #34 — full combo probe. V-embed alone is the natural-end winner
+    (4.7728), Q-embed adds 0.03 to V (V+Q = 4.7428). K-embed is
+    essentially tied with Q at the natural end (4.8228 vs 4.8159,
+    inside noise). Tests "is K redundant with Q in the V+Q combo?"
+    If V+Q+K ≈ V+Q, K adds nothing. If V+Q+K < V+Q, K is hurting.
+    If V+Q+K > V+Q, K is contributing beyond Q.
+
+    Cost = 24 × (q_size 144 + 2 × kv_size 48) × emb_rank 48
+        = 24 × 240 × 48 = 276,480 extra params (~3.6% over baseline).
+    """
+    use_value_embed: bool = True
+    use_query_embed: bool = True
+    use_key_embed: bool = True
+
+
+@dataclass
+class Screen10M20MVOEmbedConfig(Screen10M20MConfig):
+    """Screen10M20M with token value (inside attention) + output (post-O) embeddings.
+
+    #35 — across-boundary combo. V-embed wins inside attention (4.7728),
+    O-embed is the worst of the family (4.8350). Tests whether the
+    inside-attention and post-O positions are additive — i.e. whether
+    adding the token signal to the residual stream helps when V is
+    already injecting it into attention. If V+O < V, the residual
+    signal interferes with V's inside-attention signal. If V+O > V,
+    the residual signal adds value.
+
+    Cost = 24 × (kv_size 48 + d_model 144) × emb_rank 48
+        = 24 × 192 × 48 = 221,184 extra params (~2.9% over baseline).
+    """
+    use_value_embed: bool = True
+    use_output_embed: bool = True
+
+
 # ============================================================================
 # FULL ladder — 20x tokens (compute-optimal / Chinchilla). Transfer-valid: this
 # is where a mechanism's real optimum is locked. Ladder 10M→25M→50M→135M lets
