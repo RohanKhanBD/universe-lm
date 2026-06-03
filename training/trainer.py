@@ -178,6 +178,13 @@ def train_model(
             'actual_steps': current_step,
             'tokens_seen': current_tokens,
             'history': metrics_history,
+            # #65 self-identifying run (forward-only; live writes
+            # also stamp identity so the latest .json always answers
+            # "which run am I?" even mid-training)
+            'run_name': output_path.name,
+            'config_name': config.__class__.__name__,
+            'seed': getattr(config, 'seed', None),
+            'flags': config.active_flags(),
             **capture_git_metadata(),
         }
         if extra_config:
@@ -555,6 +562,8 @@ def train_minimal_llm(
     output_dir: Optional[str] = None,
     load_weights_path: Optional[str] = None,
     compare_baseline: bool = False,
+    config_name: Optional[str] = None,
+    run_seed: Optional[int] = None,
 ):
     print(f"\n🚀 Training dense model")
     setup_start = time.time()
@@ -733,6 +742,14 @@ def train_minimal_llm(
         'train_tokens': config.train_tokens,
         'gated': gated,
         'history': metrics_history,
+        # #65 self-identifying run: every metrics.json answers
+        # "which run am I?" on its own. DESC in
+        # runs/make_evidence_index.py is the curated prose;
+        # these fields are the structured truth.
+        'run_name': output_path.name if output_path else None,
+        'config_name': config_name or config.__class__.__name__,
+        'seed': run_seed if run_seed is not None else getattr(config, 'seed', None),
+        'flags': config.active_flags(),
         **capture_git_metadata(),
     }
     with open(metrics_file, 'w') as f:

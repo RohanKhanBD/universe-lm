@@ -93,6 +93,78 @@ class LLMConfig:
     # (default 96 = 2× emb_rank for Screen10M20M).
     use_deep_value_embed: bool = False
     deep_value_embed_hidden: Optional[int] = None
+    # #47 FFN embeddings: add a learned projection of the factorized
+    # token embedding to the FFN input. Different position from
+    # V-embed (in attention) and O-embed (post-O residual). Tests
+    # whether the V-embed win is about attention content or about
+    # residual content. The FFN now has direct access to token
+    # identity without going through attention. Cost: 24 × (d_model
+    # 144 × emb_rank 48) = 165,888 extra params (~2.1%).
+    use_ffn_embed: bool = False
+    # #49 QK-norm-post-RoPE: apply RMSNorm to Q,K AFTER RoPE (modded-
+    # nanogpt variant) instead of the default BEFORE RoPE. Flag-only,
+    # no extra params. The post-RoPE norm constrains post-RoPE Q,K
+    # magnitudes per head, which can help with attention score
+    # stability. Mathematically different from pre-RoPE norm.
+    use_qk_norm_post_rope: bool = False
+    # #51 sliding-window attention: replace the full causal mask with
+    # a local causal window of width `sliding_window_size`. Flag-only,
+    # no extra params. Tests whether the attention *pattern* (not just
+    # the inputs) has headroom at this scale — i.e. whether most of the
+    # useful long-range signal can be replaced by a short window. If
+    # window matches our 2k seq_len's natural coherence, this is a
+    # capacity-shaping lever. If not, it caps the model's context.
+    use_sliding_window: bool = False
+    sliding_window_size: int = 512
+    # #53 NoPE: skip RoPE entirely. Flag-only, no extra params. The
+    # purest test of whether positional information is load-bearing
+    # at this scale. If NoPE ≈ baseline, position is mostly conveyed
+    # by the causal mask + token identity (and our token identity
+    # injection via V-embed may be partially substituting for RoPE).
+    # If NoPE << baseline, RoPE is critical and there's no slack.
+    use_nope: bool = False
+    # #55 layer tying (ALBERT-style): when tie_layer_groups=N, every
+    # group of N consecutive blocks shares weights. The model creates
+    # n_layers // N unique blocks and the forward pass cycles through
+    # them. group_size=1 (default) is the standard non-tied baseline.
+    # group_size=2 means 12 unique blocks for 24 layers — half the
+    # unique depth params, with each block seeing two distinct
+    # positions. Incompatible with U-Net skips.
+    tie_layer_groups: int = 1
+    # #63 RoPE base: control the wavelength of the rotary. The default
+    # base=10000 is GPT-Neo style; Llama uses 500000 which extends the
+    # useful positional range. Tests whether the default decay is
+    # hurting at our seq_len=2048 (e.g. a 500k base keeps more
+    # headroom for distant positions).
+    rope_base: int = 10000
+    # #71 logit softcap (Gemma-style): cap logits at ±softcap via
+    # `logits = softcap * tanh(logits / softcap)`. A 0.0 value
+    # disables it (default). Gemma uses 30.0; we test smaller caps
+    # (15.0, 20.0) since our model is smaller. The cap is applied
+    # right before the LM head loss, so the gradient is backpropped
+    # through the tanh. Real arch change — known stabilizer that
+    # can change the loss landscape and unlock better minima.
+    logit_softcap: float = 0.0
+    # #72 Tied QK (PaLM-style): Q and K share the same projection
+    # matrix. The merged QK is shape [q_size + kv_size, d_model],
+    # output is split into Q (q_size) and K (kv_size). Real arch
+    # change — PaLM's signature attention choice. The Q and K
+    # weights are no longer independent; this is a structural
+    # constraint, not a hyperparam.
+    use_tied_qk: bool = False
+    # #73 Multi-head Latent Attention (MLA, DeepSeek-V2): compress
+    # K, V into a low-rank latent of dim `mla_latent_dim`, then
+    # up-project per head. Different attention design from the
+    # standard projection-per-head. Real arch change.
+    use_mla: bool = False
+    mla_latent_dim: Optional[int] = None
+    # #74 Dilated attention: like SWA but the window consists of
+    # every `dilation`-th position (instead of contiguous). Tests
+    # whether strided/sparse patterns beat contiguous locality.
+    # dilation=1 (default) means contiguous (SWA). dilation=2 means
+    # every other position. The window still covers ~`window_size`
+    # positions by token count, but spread across a longer range.
+    attention_dilation: int = 1
 
     # Base Training Defaults
     seed: int = 42  # seeds model init AND data order; override via --seed
@@ -127,6 +199,24 @@ class LLMConfig:
     def __post_init__(self):
         self.d_k = self.d_model // self.n_heads
         assert self.d_model % self.n_heads == 0, "d_model must be divisible by n_heads"
+
+    def active_flags(self) -> dict:
+        """Return {field_name: value} for every field whose value differs
+        from the LLMConfig default. Used by the metrics writer to dump
+        only the non-default knobs — the "what was on" summary of a
+        run. Forward-only: new runs emit this; old metrics.json
+        don't have it (DESC in runs/make_evidence_index.py is the
+        fallback for those).
+        """
+        import dataclasses
+        defaults = LLMConfig()
+        out = {}
+        for f in dataclasses.fields(self):
+            cur = getattr(self, f.name)
+            dflt = getattr(defaults, f.name, None)
+            if cur != dflt and not f.name.startswith("_"):
+                out[f.name] = cur
+        return out
 
 
 # ============================================================================
@@ -182,6 +272,7 @@ class Screen10M5MConfig(Screen10M20MConfig):
 class Screen10M20MSwiGLUConfig(Screen10M20MConfig):
     """Screen10M20M with SwiGLU feed-forward blocks."""
     ffn_variant: str = "swiglu"
+    d_ff: int = 384  # Parameter-matched to squared-ReLU d_ff=576.
 
 
 @dataclass
@@ -429,6 +520,467 @@ class Screen10M20MDeepVQGainConfig(Screen10M20MConfig):
     use_deep_value_embed: bool = True
     deep_value_embed_hidden: int = 96
     use_q_gain: bool = True
+
+
+@dataclass
+class Screen10M20MFFNEmbedConfig(Screen10M20MConfig):
+    """Screen10M20M with token embeddings injected into FFN input.
+
+    #47 — new position probe. The FFN-embed adds a learned projection
+    of the factorized token embedding to the FFN input (post-attention,
+    pre-FFN, after norm2). Different path from V-embed (in attention)
+    and O-embed (post-O residual). The FFN now has direct access to
+    token identity without going through attention.
+
+    Cost = 24 × (d_model 144 × emb_rank 48) = 165,888 extra params
+    (~2.1% over baseline).
+
+    Tests:
+    - If FFN-embed ≈ V-embed (4.7728), the lever is "token identity
+      into residual content" regardless of position.
+    - If FFN-embed > V-embed, the FFN is a more useful position than
+      attention's V (because it's a more direct path).
+    - If FFN-embed < V-embed, the position matters — V-embed's win is
+      specifically about attention content, not residual content.
+    """
+    use_ffn_embed: bool = True
+
+
+@dataclass
+class Screen10M20MVQGFFNEmbedConfig(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + FFN-embed.
+
+    #48 — combines #29 (V-embed), #37 (q_gain), and #47 (FFN-embed).
+    Tests whether the FFN-embed lever is also additive with V+q_gain.
+    If V+q_gain+ffn_embed < V+q_gain (4.6815), FFN-embed conflicts
+    with V+q_gain. If V+q_gain+ffn_embed > V+q_gain, FFN-embed adds
+    a new dimension to the win.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_ffn_embed: bool = True
+
+
+@dataclass
+class Screen10M20MVQGainQKPostNormConfig(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + QK-norm-post-RoPE.
+
+    #49 — applies the modded-nanogpt QK-norm-post-RoPE variant on top
+    of V+q_gain. Different mathematical operating point: the post-RoPE
+    norm constrains post-RoPE Q,K magnitudes per head. Flag-only, no
+    extra params. Tests whether the normalization story (where the
+    norm is applied) breaks the V+q_gain plateau.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_qk_norm_post_rope: bool = True
+
+
+@dataclass
+class Screen10M20MVQGainSwiGLUConfig(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + SwiGLU FFN.
+
+    #50 — combines V+q_gain with SwiGLU FFN (instead of squared_relu).
+    SwiGLU is a different FFN activation. Tests whether the FFN
+    activation is part of the V+q_gain plateau. Uses d_ff=384 so the
+    3-matrix SwiGLU FFN is parameter-matched to squared-ReLU d_ff=576:
+    3 * d_model * 384 == 2 * d_model * 576.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    ffn_variant: str = "swiglu"
+    d_ff: int = 384
+
+
+@dataclass
+class Screen10M20MVQGainSlidingWindowConfig(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + sliding-window attention.
+
+    #51 — first attention-pattern axis in the ladder. V+q_gain (the
+    plateau) plus a local causal window of 512 tokens. Flag-only, no
+    extra params. Tests whether the attention *pattern* (not just the
+    inputs) has headroom at this scale. Window 512 = quarter of
+    seq_len 2048, a clean first probe. If this beats V+q_gain
+    (4.6815), the attention matrix itself was a hidden lever; if it
+    ties, long-range is a wash; if it loses, long-range is load-
+    bearing and SWA is closed.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+
+
+@dataclass
+class Screen10M20MSlidingWindowConfig(Screen10M20MConfig):
+    """Screen10M20M with sliding-window attention ONLY (no embeds, no gains).
+
+    #52 — clean ablation. Same window (512) as #51, but the V-embed and
+    q_gain levers are off. Tests whether sliding-window attention is a
+    standalone lever (in which case this should land near V+q+SWA's
+    4.6700) or just a small add-on to V+q_gain (in which case this
+    should land near control 4.7984, or even worse if long-range is
+    load-bearing). The most informative single screen for deciding
+    whether the architecture change is "use SWA" or "use V+q_gain".
+    """
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+
+
+@dataclass
+class Screen10M20MNoPEConfig(Screen10M20MConfig):
+    """Screen10M20M with no positional encoding (NoPE).
+
+    #53 — fresh axis: positional encoding. Skips the rotary call
+    entirely while keeping the Q/K RMSNorm. Flag-only, no extra
+    params. Tests whether RoPE is load-bearing at this scale. If
+    NoPE ≈ control (4.7984), position is mostly conveyed by the
+    causal mask + token identity injection (and our V-embed lever
+    is partially substituting for RoPE). If NoPE << control, RoPE
+    is critical and there's no slack there. If NoPE < control,
+    position is hurting — surprising but worth measuring.
+    """
+    use_nope: bool = True
+
+
+@dataclass
+class Screen10M20MVQGainNoPEConfig(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + NoPE.
+
+    #54 — tests whether NoPE is additive with the V+q_gain plateau
+    (3-seed mean 4.6815). If V+q+NoPE < 4.6815, NoPE is a real lever
+    on the best baseline. If V+q+NoPE > 4.6815, RoPE is load-bearing
+    for V+q and NoPE is closed. If V+q+NoPE ≈ 4.6815, position is a
+    wash when paired with V+q_gain.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_nope: bool = True
+
+
+@dataclass
+class Screen10M20MLayerTied2Config(Screen10M20MConfig):
+    """Screen10M20M with layer tying (ALBERT-style, group_size=2).
+
+    #55 — fresh axis: weight sharing across depth. 24 layers, every
+    group of 2 consecutive blocks shares weights, so 12 unique
+    TransformerBlock modules are used twice each. Drops unique
+    depth params by ~50% (qkvo+FFN per block). Tests whether depth
+    uniqueness or depth *re-use* matters more at this scale. If
+    layer_tied ≈ control (4.7984), unique depth is critical. If
+    layer_tied < control, weight sharing acts as cheap
+    regularization.
+    """
+    tie_layer_groups: int = 2
+
+
+@dataclass
+class Screen10M20MVQGainLayerTied2Config(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + layer tying (group_size=2).
+
+    #56 — combines V+q_gain (the plateau, 3-seed mean 4.6815) with
+    layer tying (group_size=2, 12 unique blocks). Tests whether the
+    V+q lever still works when each block is used twice — i.e.
+    whether V-embed projections and q_gain scalars can survive the
+    weight-sharing constraint. If V+q+tied < V+q, layer tying is
+    additive with V+q; otherwise it conflicts.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    tie_layer_groups: int = 2
+
+
+@dataclass
+class Screen10M20MGQA1Config(Screen10M20MConfig):
+    """Screen10M20M with aggressive GQA (n_kv_heads=1).
+
+    #57 — fresh axis: GQA ratio. The base config has n_kv_heads=2
+    (each KV head shared across 3 Q heads). This drops it to 1 (6:1
+    GQA — every Q head reads from the same K/V). Fewer KV params,
+    more aggressive sharing. Tests whether the GQA ratio is a real
+    architecture lever at this scale. If GQA1 < base, the model
+    benefits from more attention-head sharing; if GQA1 > base, KV
+    diversity is load-bearing.
+    """
+    n_kv_heads: int = 1
+
+
+@dataclass
+class Screen10M20MMHAConfig(Screen10M20MConfig):
+    """Screen10M20M with full multi-head attention (n_kv_heads=n_heads).
+
+    #58 — the other end of the GQA axis: no sharing at all.
+    n_kv_heads=6 means each Q head has its own K and V projection.
+    More KV params, no information sharing between heads. Tests
+    whether the current 3:1 GQA is a wash (in which case MHA ≈ GQA)
+    or whether more KV capacity helps. This is the "no GQA" point.
+    """
+    n_kv_heads: int = 6
+
+
+@dataclass
+class Screen10M20MVQGainMHAConfig(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + full MHA (n_kv_heads=6).
+
+    #59 — combines V+q_gain (the plateau, 3-seed mean 4.6815) with
+    full MHA. Tests whether the GQA ratio is additive with V+q_gain
+    on the best baseline. If V+q+MHA < V+q, full MHA is a real lever
+    on top of the plateau; otherwise GQA is sufficient.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    n_kv_heads: int = 6
+
+
+@dataclass
+class Screen10M20MGELUConfig(Screen10M20MConfig):
+    """Screen10M20M with GELU FFN activation (no gating, no squaring).
+
+    #60 — fresh axis: MLP activation. The base config uses
+    squared_relu (Primer-style); SwiGLU was tried and washed (#50).
+    This is plain GELU, the most common transformer activation.
+    Single up-projection, no gating, parameter-matched to
+    squared_relu d_ff=576. Tests whether the activation is itself
+    a real architecture lever — a cleaner test than SwiGLU, which
+    differs in BOTH activation AND number of projections.
+    """
+    ffn_variant: str = "gelu"
+
+
+@dataclass
+class Screen10M20MVQGainGELUConfig(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + GELU FFN.
+
+    #61 — combines V+q_gain (the plateau, 3-seed mean 4.6815) with
+    GELU FFN. Tests whether the activation swap is additive with
+    V+q. If V+q+GELU < V+q, GELU is a real lever; otherwise the
+    activation is a wash when V+q is in play.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    ffn_variant: str = "gelu"
+
+
+@dataclass
+class Screen10M20MVQGainSWAGELUConfig(Screen10M20MConfig):
+    """Screen10M20M with V-embed + Q-gain + sliding-window + GELU FFN.
+
+    #62 — combines the current best screen20m levers (V+q+SWA at
+    4.6700 single-seed) with the only untried MLP activation
+    (GELU). Tests whether GELU is additive with the V+q+SWA
+    plateau. If V+q+SWA+GELU < 4.6700, GELU is the new best add-on.
+    If V+q+SWA+GELU > V+q+SWA, GELU conflicts.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    ffn_variant: str = "gelu"
+
+
+@dataclass
+class Screen10M20MHighRoPEConfig(Screen10M20MConfig):
+    """Screen10M20M with Llama-style RoPE base (500000).
+
+    #63 — fresh axis: positional decay. The default base=10000 gives
+    short wavelength (positional information blurs fast). Llama's
+    500000 keeps positional information sharper over longer
+    distances. Tests whether our seq_len=2048 is hitting the edge
+    of the default RoPE's useful range.
+    """
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPEConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA + Llama-style RoPE base.
+
+    #64 — combines the new best screen20m levers (V+q+SWA at
+    4.6676 2-seed mean) with the high RoPE base. Tests whether
+    Llama-style positional decay is additive with V+q+SWA.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPEGELUConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA + High RoPE + GELU FFN.
+
+    #65 — combines the new best screen20m levers (V+q+SWA+
+    HighRoPE at 4.6364) with GELU FFN. Tests whether GELU is
+    additive with the V+q+SWA+HighRoPE plateau.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    ffn_variant: str = "gelu"
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPETied2Config(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA + High RoPE + layer tying (group=2).
+
+    #66 — V+q+LayerTied2 was anti-additive (4.7419 vs V+q 4.6797),
+    but on the new best baseline (V+q+SWA+HighRoPE 4.6364) the
+    question is whether SWA+RoPE-base have changed the
+    regularization story enough that tying now adds value.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    tie_layer_groups: int = 2
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPEMHAConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA + High RoPE + full MHA (n_kv_heads=6).
+
+    #67 — MHA alone was a wash on control (4.7981 vs 4.7984).
+    On the new best baseline the question is whether the GQA
+    ratio becomes a lever when paired with the other wins.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    n_kv_heads: int = 6
+
+
+@dataclass
+class Screen10M20MVQGainHighRoPESWA256Config(Screen10M20MConfig):
+    """Screen10M20M with V+q + High RoPE + SWA (window=256).
+
+    #68 — window size sweep on the V+q+HighRoPE plateau. The current
+    best baseline uses window=512. Tests whether a smaller window
+    (256 = 1/8 of seq_len) is better. Smaller window = more
+    aggressive locality. Mask density: sum(min(256,i+1))/2048^2 =
+    0.13.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 256
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainHighRoPESWA1024Config(Screen10M20MConfig):
+    """Screen10M20M with V+q + High RoPE + SWA (window=1024).
+
+    #69 — window size sweep (larger). Window=1024 = half of
+    seq_len. Tests whether the default window=512 is sub-optimal.
+    Mask density: sum(min(1024,i+1))/2048^2 = 0.378.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 1024
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainHighRoPENoSWAConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q + High RoPE + NO SWA.
+
+    #70 — V+q+HighRoPE without SWA. Tests whether SWA is still
+    load-bearing on the new RoPE-base=500000 baseline. If this
+    lands at ~4.6364, SWA is redundant on top of HighRoPE. If
+    it's much worse, SWA is still load-bearing.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = False
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPELogitSoftcapConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA+HighRoPE + logit softcap (Gemma-style).
+
+    #71 — logit softcap=15.0 on the new best baseline. Real
+    architecture change: logit = softcap * tanh(logit/softcap).
+    Tests whether the cap is a real lever. Gemma uses 30.0; we
+    test 15.0 because our model is smaller.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    logit_softcap: float = 15.0
+
+
+@dataclass
+class Screen10M20MVQGainSWATiedQKConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA + Tied QK (PaLM-style).
+
+    #72 — Tied QK: Q and K share the same projection matrix.
+    Real arch change. PaLM uses this as the default attention
+    design. Tests whether tying QK weights is a real lever.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    use_tied_qk: bool = True
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPETiedQKConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA+HighRoPE + Tied QK (PaLM-style).
+
+    #72b — same as #72 but on the V+q+SWA+HighRoPE best baseline.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    use_tied_qk: bool = True
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPEMLAConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA+HighRoPE + MLA (DeepSeek-V2-style).
+
+    #73 — Multi-head Latent Attention: K,V are computed via a
+    low-rank latent (d_c=mla_latent_dim, default d_model//4=36).
+    Real arch change. DeepSeek-V2 uses this. Tests whether
+    the latent bottleneck is a real lever on our small model.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    use_mla: bool = True
+    mla_latent_dim: int = 36
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPEDilatedConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA+HighRoPE + Dilated Attention.
+
+    #74 — dilation=2. Same window_size=512 by token count, but
+    positions are spread (every other position in the window
+    range). Tests whether strided patterns beat contiguous
+    locality at this scale. Effective range: 2*512=1024 tokens.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    attention_dilation: int = 2
 
 
 @dataclass
