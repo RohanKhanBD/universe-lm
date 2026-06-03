@@ -555,6 +555,8 @@ def train_minimal_llm(
     output_dir: Optional[str] = None,
     load_weights_path: Optional[str] = None,
     compare_baseline: bool = False,
+    config_name: Optional[str] = None,
+    run_seed: Optional[int] = None,
 ):
     print(f"\n🚀 Training dense model")
     setup_start = time.time()
@@ -733,6 +735,14 @@ def train_minimal_llm(
         'train_tokens': config.train_tokens,
         'gated': gated,
         'history': metrics_history,
+        # #65 self-identifying run: dump the config class name + seed
+        # so metrics.json alone is enough to identify a run. Pairs with
+        # runs/EVIDENCE_INDEX.md (auto-generated from the committed
+        # metrics.json files). config_name is the bare class name
+        # (e.g. "Screen10M20MVQGainSlidingWindowConfig"), seed is the
+        # int passed via --seed.
+        'config_name': config_name or config.__class__.__name__,
+        'run_seed': run_seed if run_seed is not None else getattr(config, 'seed', None),
         **capture_git_metadata(),
     }
     with open(metrics_file, 'w') as f:

@@ -18,8 +18,8 @@ HERE = os.path.dirname(__file__)
 DESC = {
     # --- screen20m natural-end tier (step 4,883) ---
     "s_ctrl_full":        ("screen20m ctrl",  "Control, no flags — screen20m baseline"),
-    "s_vqgain_swa_full":  ("#51 RECORD s42",  "V+q_gain + SWA(window=512) — current screen20m record, seed 42"),
-    "s_vqgain_swa_s43":   ("#51 RECORD s43",  "V+q_gain + SWA, seed 43 (record multi-seed confirm, mean 4.6676)"),
+    "s_vqgain_swa_full":  ("#51 s42",  "V+q_gain + SWA(window=512), seed 42 (multi-seed mean 4.6676)"),
+    "s_vqgain_swa_s43":   ("#51 s43",  "V+q_gain + SWA, seed 43 (multi-seed confirm)"),
     "s_vqgain_full":      ("#39 s42",         "V-embed + per-head q_gain, seed 42"),
     "s_vqgain_s43":       ("#39 s43",         "V+q_gain, seed 43"),
     "s_vqgain_s44":       ("#39 s44",         "V+q_gain, seed 44 (3-seed mean 4.6815, std 0.0057)"),
@@ -52,7 +52,7 @@ DESC = {
     "s_ffnembed_full":      ("variant",       "FFN-embed injection"),
     "s_vqgffnembed_full":   ("variant",       "V+q_gain + FFN-embed"),
     "s_vqgain_swiglu_full": ("variant",       "V+q_gain + SWiGLU FFN"),
-    "s_vqgain_swa_gelu_full":("variant WIP",  "V+q_gain + SWA + GELU FFN (in-flight run)"),
+    "s_vqgain_swa_gelu_full":("#62 NEW BEST",  "V+q+SWA + GELU FFN — current screen20m best 4.6608, single-seed"),
     "s_vqgainqkpostnorm_full":("variant",     "V+q_gain + QK post-norm"),
     # --- 4k gated screen tier ---
     "s_ctrl":  ("screen16m ctrl", "4k gated control (5.0078)"),

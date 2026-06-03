@@ -438,11 +438,13 @@ def main():
     logger.info(f"Model configuration: {vars(config)}")
 
     train_minimal_llm(
-        config, 
-        train_loader, 
-        val_loader, 
-        output_dir=output_dir, 
+        config,
+        train_loader,
+        val_loader,
+        output_dir=output_dir,
         load_weights_path=args.load_checkpoint,
+        config_name=args.config_class,
+        run_seed=args.seed,
     )
 
 

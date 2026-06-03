@@ -52,6 +52,7 @@ class MinimalLLM(nn.Module):
         # magnitude stabilizer, separate concern from position), but
         # the rotary is bypassed.
         self.use_nope = getattr(config, "use_nope", False)
+        self.rope_base = getattr(config, "rope_base", 10000)
         # #55 layer tying (ALBERT-style): when tie_layer_groups=N, every
         # group of N consecutive blocks shares weights. We create only
         # n_layers // N unique blocks and the forward pass cycles through
@@ -89,6 +90,7 @@ class MinimalLLM(nn.Module):
                     use_sliding_window=self.use_sliding_window,
                     sliding_window_size=self.sliding_window_size,
                     use_nope=self.use_nope,
+                    rope_base=self.rope_base,
                     value_embed_rank=value_embed_rank,
                 )
                 for i in range(n_unique)
