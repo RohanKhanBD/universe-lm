@@ -231,7 +231,7 @@ class MultiHeadAttention(nn.Module):
 
     # XSA: https://arxiv.org/pdf/2603.09078
     def xsa(self, attn: torch.Tensor, Value: torch.Tensor):
-        B, T, H, D = attn.shape
+        B, _, T, D = attn.shape
         kv = Value.size(1)
         kv_group = self.num_key_value_groups
 
