@@ -199,4 +199,10 @@ class MinimalLLM(nn.Module):
         if self.output_adapter_out is not None:
             logits = logits + self.output_adapter_out(self.output_adapter_in(x))
 
+        # #71 logit softcap (Gemma-style): logit_softcap=0.0 disables.
+        # Applied right before the loss — gradient flows through tanh.
+        softcap = getattr(self.config, 'logit_softcap', 0.0)
+        if softcap > 0.0:
+            logits = softcap * torch.tanh(logits / softcap)
+
         return logits
