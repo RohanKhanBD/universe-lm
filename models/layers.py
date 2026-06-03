@@ -231,14 +231,15 @@ class MultiHeadAttention(nn.Module):
 
     # XSA: https://arxiv.org/pdf/2603.09078
     def xsa(self, attn: torch.Tensor, Value: torch.Tensor):
-        B, _, T, D = attn.shape
+        B, H, T, D = attn.shape
         kv = Value.size(1)
         kv_group = self.num_key_value_groups
 
         new_attn = attn.reshape(B, kv, kv_group, T, D)
         Vnorm = F.normalize(Value, dim=-1).unsqueeze(2)
         proj = (new_attn * Vnorm).sum(dim=-1, keepdim=True) * Vnorm
-        return (attn - proj).reshape
+        return (attn - proj).reshape(B, H, T, D)
+
 
 class TransformerBlock(nn.Module):
     """Standard transformer block with dense feed-forward"""
