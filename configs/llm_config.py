@@ -131,6 +131,12 @@ class LLMConfig:
     # unique depth params, with each block seeing two distinct
     # positions. Incompatible with U-Net skips.
     tie_layer_groups: int = 1
+    # #63 RoPE base: control the wavelength of the rotary. The default
+    # base=10000 is GPT-Neo style; Llama uses 500000 which extends the
+    # useful positional range. Tests whether the default decay is
+    # hurting at our seq_len=2048 (e.g. a 500k base keeps more
+    # headroom for distant positions).
+    rope_base: int = 10000
 
     # Base Training Defaults
     seed: int = 42  # seeds model init AND data order; override via --seed
@@ -724,6 +730,34 @@ class Screen10M20MVQGainSWAGELUConfig(Screen10M20MConfig):
     use_sliding_window: bool = True
     sliding_window_size: int = 512
     ffn_variant: str = "gelu"
+
+
+@dataclass
+class Screen10M20MHighRoPEConfig(Screen10M20MConfig):
+    """Screen10M20M with Llama-style RoPE base (500000).
+
+    #63 — fresh axis: positional decay. The default base=10000 gives
+    short wavelength (positional information blurs fast). Llama's
+    500000 keeps positional information sharper over longer
+    distances. Tests whether our seq_len=2048 is hitting the edge
+    of the default RoPE's useful range.
+    """
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPEConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA + Llama-style RoPE base.
+
+    #64 — combines the new best screen20m levers (V+q+SWA at
+    4.6676 2-seed mean) with the high RoPE base. Tests whether
+    Llama-style positional decay is additive with V+q+SWA.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
 
 
 @dataclass

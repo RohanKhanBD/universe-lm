@@ -6,10 +6,10 @@ from .components import SquaredReLUFeedForward, SwiGLUFeedForward, GELUFeedForwa
 
 
 class Rotary(nn.Module):
-    def __init__(self, dim: int, max_seq_len: int):
+    def __init__(self, dim: int, max_seq_len: int, base: int = 10000):
         super().__init__()
         self.rope = RotaryPositionalEmbeddings(
-            dim=dim, max_seq_len=max_seq_len, base=10000
+            dim=dim, max_seq_len=max_seq_len, base=base
         )
 
     def forward(self, x_BTHD: torch.Tensor):
@@ -41,6 +41,7 @@ class MultiHeadAttention(nn.Module):
         use_sliding_window: bool = False,
         sliding_window_size: int = 512,
         use_nope: bool = False,
+        rope_base: int = 10000,
     ):
         super().__init__()
         self.d_model = d_model
@@ -73,7 +74,7 @@ class MultiHeadAttention(nn.Module):
         self.q_norm = nn.RMSNorm(self.d_k)
         self.k_norm = nn.RMSNorm(self.d_k)
 
-        self.rotary = Rotary(self.d_k, max_seq_len)
+        self.rotary = Rotary(self.d_k, max_seq_len, base=rope_base)
         self.dropout = dropout
         self.use_attn_output_gate = use_attn_output_gate
         if self.use_attn_output_gate:
@@ -157,6 +158,11 @@ class MultiHeadAttention(nn.Module):
         # magnitude stabilizer, separate concern from position), but
         # the rotary is bypassed.
         self.use_nope = use_nope
+        # #63 RoPE base: control the wavelength of the rotary. The
+        # default base=10000 is GPT-Neo style; Llama uses 500000 which
+        # extends the useful positional range. Tests whether the
+        # default decay is hurting at our seq_len=2048.
+        self.rope_base = rope_base
         # #51 sliding-window attention: build a [T, T] causal-local
         # boolean mask once at init and reuse. True = attend,
         # False = mask out. Built for max_seq_len; the SDPA call slices
@@ -311,6 +317,7 @@ class TransformerBlock(nn.Module):
         use_sliding_window: bool = False,
         sliding_window_size: int = 512,
         use_nope: bool = False,
+        rope_base: int = 10000,
     ):
         super().__init__()
 
@@ -333,6 +340,7 @@ class TransformerBlock(nn.Module):
             use_sliding_window=use_sliding_window,
             sliding_window_size=sliding_window_size,
             use_nope=use_nope,
+            rope_base=rope_base,
             value_embed_rank=value_embed_rank,
         )
         if ffn_variant == "squared_relu":
