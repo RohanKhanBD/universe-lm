@@ -137,6 +137,14 @@ class LLMConfig:
     # hurting at our seq_len=2048 (e.g. a 500k base keeps more
     # headroom for distant positions).
     rope_base: int = 10000
+    # #71 logit softcap (Gemma-style): cap logits at ±softcap via
+    # `logits = softcap * tanh(logits / softcap)`. A 0.0 value
+    # disables it (default). Gemma uses 30.0; we test smaller caps
+    # (15.0, 20.0) since our model is smaller. The cap is applied
+    # right before the LM head loss, so the gradient is backpropped
+    # through the tanh. Real arch change — known stabilizer that
+    # can change the loss landscape and unlock better minima.
+    logit_softcap: float = 0.0
 
     # Base Training Defaults
     seed: int = 42  # seeds model init AND data order; override via --seed
@@ -825,6 +833,70 @@ class Screen10M20MVQGainSWAHighRoPEMHAConfig(Screen10M20MConfig):
     sliding_window_size: int = 512
     rope_base: int = 500000
     n_kv_heads: int = 6
+
+
+@dataclass
+class Screen10M20MVQGainHighRoPESWA256Config(Screen10M20MConfig):
+    """Screen10M20M with V+q + High RoPE + SWA (window=256).
+
+    #68 — window size sweep on the V+q+HighRoPE plateau. The current
+    best baseline uses window=512. Tests whether a smaller window
+    (256 = 1/8 of seq_len) is better. Smaller window = more
+    aggressive locality. Mask density: sum(min(256,i+1))/2048^2 =
+    0.13.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 256
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainHighRoPESWA1024Config(Screen10M20MConfig):
+    """Screen10M20M with V+q + High RoPE + SWA (window=1024).
+
+    #69 — window size sweep (larger). Window=1024 = half of
+    seq_len. Tests whether the default window=512 is sub-optimal.
+    Mask density: sum(min(1024,i+1))/2048^2 = 0.378.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 1024
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainHighRoPENoSWAConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q + High RoPE + NO SWA.
+
+    #70 — V+q+HighRoPE without SWA. Tests whether SWA is still
+    load-bearing on the new RoPE-base=500000 baseline. If this
+    lands at ~4.6364, SWA is redundant on top of HighRoPE. If
+    it's much worse, SWA is still load-bearing.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = False
+    rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPELogitSoftcapConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA+HighRoPE + logit softcap (Gemma-style).
+
+    #71 — logit softcap=15.0 on the new best baseline. Real
+    architecture change: logit = softcap * tanh(logit/softcap).
+    Tests whether the cap is a real lever. Gemma uses 30.0; we
+    test 15.0 because our model is smaller.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    logit_softcap: float = 15.0
 
 
 @dataclass
