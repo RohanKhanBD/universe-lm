@@ -208,7 +208,11 @@ class MultiHeadAttention(nn.Module):
         if self.use_attn_output_gate:
             gate = 1.0 + self.attn_output_gate.view(1, self.n_heads, 1, 1)
             attn_output = attn_output * gate
-        
+
+        # XSA: https://arxiv.org/pdf/2603.09078
+        Vnorm = F.normalize(V, dim=-1)
+        attn_output = attn_output - (attn_output * Vnorm).sum(dim=-1, keepdim=True) * Vnorm
+
         # Reshape output
         attn_output = attn_output.transpose(1, 2).reshape(
             batch_size, seq_len, self.d_model
