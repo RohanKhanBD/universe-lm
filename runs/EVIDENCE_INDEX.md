@@ -11,7 +11,9 @@ Sorted by val_loss (best first). All numbers read live from the JSON.
 
 | Run dir | Val loss | Steps | Gated | Commit | LB ref | What it is |
 |---|---|---|---|---|---|---|
-| `s_vqgain_swa_highrope_full` | 4.6364 | 4883 | False | `4be65bb6` | #64 NEW BEST | V+q+SWA + RoPE_base=500000 — current screen20m best 4.6364, single-seed |
+| `s_vqgain_swa_highrope_full` | 4.6364 | 4883 | False | `4be65bb6` | #64 | V+q+SWA + RoPE_base=500000 — current screen20m best 4.6364, single-seed |
+| `s_vqgain_swa_highrope_mha_full` | 4.6384 | 4883 | False | `4be65bb6` | #67 | V+q+SWA+HighRoPE + full MHA — 4.6384, GQA ratio is a wash (closed) |
+| `s_vqgain_swa_highrope_gelu_full` | 4.6527 | 4883 | False | `4be65bb6` | #65 | V+q+SWA+HighRoPE + GELU — 4.6527, GELU anti-additive on HighRoPE (closed) |
 | `s_vqgain_swa_gelu_full` | 4.6608 | 4883 | False | `4be65bb6` | #62 | V+q+SWA + GELU FFN — single-seed 4.6608 (was best until #64) |
 | `s_vqgain_swa_s43` | 4.6652 | 4883 | False | `4be65bb6` | #51 s43 | V+q_gain + SWA, seed 43 (multi-seed confirm) |
 | `s_vqgain_swa_full` | 4.6700 | 4883 | False | `4be65bb6` | #51 s42 | V+q_gain + SWA(window=512), seed 42 (multi-seed mean 4.6676) |
@@ -26,6 +28,7 @@ Sorted by val_loss (best first). All numbers read live from the JSON.
 | `s_vqgain_swiglu_full` | 4.6944 | 4883 | False | `4be65bb6` | variant | V+q_gain + SWiGLU FFN |
 | `s_vqkgain_s44` | 4.6956 | 4883 | False | `4be65bb6` | #43 s44 | V+q+k_gain, seed 44 (3-seed mean 4.6949) |
 | `s_vqgffnembed_full` | 4.6988 | 4883 | False | `4be65bb6` | variant | V+q_gain + FFN-embed |
+| `s_vqgain_swa_highrope_tied2_full` | 4.7133 | 4883 | False | `4be65bb6` | #66 | V+q+SWA+HighRoPE + layer tying(2) — 4.7133, tying anti-additive (closed) |
 | `s_vqkgain_s43` | 4.7141 | 4883 | False | `4be65bb6` | #43 s43 | V+q+k_gain, seed 43 |
 | `s_vqqgain_full` | 4.7169 | 4883 | False | `4be65bb6` | #40 | V+Q embed + q_gain (Q-embed redundant with q_gain) |
 | `s_voembed_full` | 4.7188 | 4883 | False | `4be65bb6` | #35 | V+O embed combo |
@@ -60,4 +63,4 @@ Sorted by val_loss (best first). All numbers read live from the JSON.
 | `emb_resid` | 5.4875 | 1500 | None | `4be65bb6` | issue#20 §1 | Embedding residual (early kill) |
 | `s_outadapter` | 6.0775 | 1000 | None | `4be65bb6` | ablation §3 | Low-rank output adapter (collapsed) |
 
-_48 runs._
+_51 runs._
