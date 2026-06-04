@@ -42,11 +42,13 @@ class MultiHeadAttention(nn.Module):
         sliding_window_size: int = 512,
         use_nope: bool = False,
         rope_base: int = 10000,
+        use_layernorm: bool = False,
         use_tied_qk: bool = False,
         use_mla: bool = False,
         mla_latent_dim: int | None = None,
         attention_dilation: int = 1,
         use_post_norm: bool = False,
+        use_linear_attn: bool = False,
     ):
         super().__init__()
         # #75 Post-norm: when set, the norm is applied AFTER the
@@ -54,6 +56,18 @@ class MultiHeadAttention(nn.Module):
         # compute (norm, residual) inside the function but apply
         # the norm to (x + sublayer_out) before returning.
         self.use_post_norm = use_post_norm
+        # #79 LayerNorm vs RMSNorm. When set, every nn.RMSNorm in
+        # the block is replaced with nn.LayerNorm (with learned
+        # scale + bias). Tests whether the choice of norm is a
+        # real architecture lever.
+        self.use_layernorm = use_layernorm
+        # #80 Linear attention (Performer-style): when set, the
+        # softmax attention is replaced with kernel-approximated
+        # attention using phi(x) = elu(x) + 1. The SDPA path
+        # still runs (with the mask), but on phi(Q) and phi(K).
+        # Tests whether the kernel approximation unlocks a new
+        # operating point.
+        self.use_linear_attn = use_linear_attn
         self.d_model = d_model
         self.n_heads = n_heads
         self.n_kv_heads = n_kv_heads if n_kv_heads is not None else n_heads
@@ -102,8 +116,10 @@ class MultiHeadAttention(nn.Module):
                 torch.nn.init.normal_(self.mla_uv,  mean=0.0, std=0.02)
         # ================================================
         
-        self.q_norm = nn.RMSNorm(self.d_k)
-        self.k_norm = nn.RMSNorm(self.d_k)
+        self.q_norm = (nn.LayerNorm(self.d_k, elementwise_affine=True) if self.use_layernorm
+                       else nn.RMSNorm(self.d_k))
+        self.k_norm = (nn.LayerNorm(self.d_k, elementwise_affine=True) if self.use_layernorm
+                       else nn.RMSNorm(self.d_k))
 
         self.rotary = Rotary(self.d_k, max_seq_len, base=rope_base)
         self.dropout = dropout
@@ -319,6 +335,14 @@ class MultiHeadAttention(nn.Module):
         # #51 sliding-window: when enabled, use a [T, T] causal-local
         # boolean mask instead of SDPA's `is_causal=True` fast path.
         # The mask is broadcast across batch and head dims.
+        # #80 linear attention (Performer-style): when set, apply
+        # phi(x) = elu(x) + 1 to Q, K, then run SDPA on the
+        # feature-mapped values. The softmax path still runs (with
+        # the mask), but the kernel is approximated. This is the
+        # cheap way to test the linear-attn feature map lever.
+        if self.use_linear_attn:
+            Q = F.elu(Q) + 1.0
+            K = F.elu(K) + 1.0
         if self.use_sliding_window:
             attn_output = F.scaled_dot_product_attention(
                 Q, K, V,
@@ -395,11 +419,13 @@ class TransformerBlock(nn.Module):
         sliding_window_size: int = 512,
         use_nope: bool = False,
         rope_base: int = 10000,
+        use_layernorm: bool = False,
         use_tied_qk: bool = False,
         use_mla: bool = False,
         mla_latent_dim: int | None = None,
         attention_dilation: int = 1,
         use_post_norm: bool = False,
+        use_linear_attn: bool = False,
     ):
         super().__init__()
         # #75 Post-norm: when set, the norm is applied AFTER the
@@ -432,6 +458,8 @@ class TransformerBlock(nn.Module):
             use_mla=use_mla,
             mla_latent_dim=mla_latent_dim,
             attention_dilation=attention_dilation,
+            use_layernorm=use_layernorm,
+            use_linear_attn=use_linear_attn,
             value_embed_rank=value_embed_rank,
         )
         if ffn_variant == "squared_relu":
@@ -444,8 +472,9 @@ class TransformerBlock(nn.Module):
             raise ValueError(f"Unknown ffn_variant: {ffn_variant}")
 
         # Normalization layers
-        self.norm1 = nn.RMSNorm(d_model)
-        self.norm2 = nn.RMSNorm(d_model)
+        _Norm = (nn.LayerNorm if use_layernorm else nn.RMSNorm)
+        self.norm1 = _Norm(d_model)
+        self.norm2 = _Norm(d_model)
         self.dropout = nn.Dropout(dropout)
 
         # #20 embedding residual: per-dim mix with the original token embedding x0,

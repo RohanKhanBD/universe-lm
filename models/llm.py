@@ -58,6 +58,8 @@ class MinimalLLM(nn.Module):
         self.mla_latent_dim = getattr(config, "mla_latent_dim", None)
         self.attention_dilation = getattr(config, "attention_dilation", 1)
         self.use_post_norm = getattr(config, "use_post_norm", False)
+        self.use_layernorm = getattr(config, "use_layernorm", False)
+        self.use_linear_attn = getattr(config, "use_linear_attn", False)
         # #55 layer tying (ALBERT-style): when tie_layer_groups=N, every
         # group of N consecutive blocks shares weights. We create only
         # n_layers // N unique blocks and the forward pass cycles through
@@ -101,6 +103,8 @@ class MinimalLLM(nn.Module):
                     mla_latent_dim=self.mla_latent_dim,
                     attention_dilation=self.attention_dilation,
                     use_post_norm=self.use_post_norm,
+                    use_layernorm=self.use_layernorm,
+                    use_linear_attn=self.use_linear_attn,
                     value_embed_rank=value_embed_rank,
                 )
                 for i in range(n_unique)
@@ -114,7 +118,9 @@ class MinimalLLM(nn.Module):
             self.x0_norm = nn.RMSNorm(config.d_model)
 
         # Output layers
-        self.norm = nn.RMSNorm(config.d_model)
+        self.norm = (nn.LayerNorm(config.d_model, elementwise_affine=True)
+                     if getattr(config, 'use_layernorm', False)
+                     else nn.RMSNorm(config.d_model))
         self.output_dropout = nn.Dropout(config.dropout)
 
         # Language modeling head (tied with embeddings).
