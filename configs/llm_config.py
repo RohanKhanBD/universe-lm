@@ -180,6 +180,20 @@ class LLMConfig:
     # (d_k). When set != 1.0, K is widened to d_k * qk_k_ratio.
     # Tests whether asymmetric Q/K dims change dynamics.
     qk_k_ratio: float = 1.0
+    # #79 LayerNorm vs RMSNorm: the base code uses RMSNorm. Set
+    # this flag to use LayerNorm instead (with learned affine).
+    # Flag-only — drops in via nn.LayerNorm in place of
+    # nn.RMSNorm. Tests whether the choice of norm is a real
+    # architecture lever on the best baseline.
+    use_layernorm: bool = False
+    # #80 Linear attention (Performer-style): replace
+    # softmax(QK^T / sqrt(d_k)) V with phi(Q) (phi(K)^T V)
+    # where phi(x) = elu(x) + 1 (the standard positive
+    # random-feature kernel). Flag-only — different attention
+    # math, can be O(n) instead of O(n^2) in the windowed
+    # case. Tests whether linear-attention math unlocks a new
+    # operating point on the best baseline.
+    use_linear_attn: bool = False
 
     # Base Training Defaults
     seed: int = 42  # seeds model init AND data order; override via --seed
@@ -1061,6 +1075,41 @@ class Screen10M20MVQGainSWAHighRoPESWAFullConfig(Screen10M20MConfig):
     use_sliding_window: bool = True
     sliding_window_size: int = 2048
     rope_base: int = 500000
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPELayerNormConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA+HighRoPE + LayerNorm (vs RMSNorm).
+
+    #79 — RMSNorm is the default. LayerNorm is the older
+    alternative with learned bias. Tests whether the choice
+    of norm is a real lever on the best baseline.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    use_layernorm: bool = True
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPELinearAttnConfig(Screen10M20MConfig):
+    """Screen10M20M with V+q+SWA+HighRoPE + linear attention.
+
+    #80 — Performer-style linear attention. Replaces the
+    softmax(QK^T / sqrt(d_k))V with phi(Q) (phi(K)^T V) where
+    phi(x) = elu(x) + 1. Different attention math (O(n) instead
+    of O(n^2) in the full case, but windowed in our case).
+    Tests whether linear attention unlocks a new operating point
+    on the best baseline.
+    """
+    use_value_embed: bool = True
+    use_q_gain: bool = True
+    use_sliding_window: bool = True
+    sliding_window_size: int = 512
+    rope_base: int = 500000
+    use_linear_attn: bool = True
 
 
 @dataclass
