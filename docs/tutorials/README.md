@@ -15,7 +15,7 @@ The rough split is:
 | QKV embeddings | [`qkv_embeddings/README.md`](qkv_embeddings/README.md) | polished tutorial with X/PDF companion assets |
 | Embedding factorization depth | [`embedding_factorization_depth/README.md`](embedding_factorization_depth/README.md) | polished tutorial |
 | QK gain | [`qk_gain/README.md`](qk_gain/README.md) | polished tutorial, figures, English PDF, Chinese version |
-| Normalization | [`normalization/README.md`](normalization/README.md) | active tutorial draft built from three normalization notes |
+| Normalization | [`normalization/README.md`](normalization/README.md) | single tutorial with figures and supporting research notes |
 
 ## Tutorial Folders
 
@@ -36,3 +36,4 @@ The normalization work is now in one folder so it can become one tutorial:
 - [`normalization/README.md`](normalization/README.md) - main teaching draft
 - [`normalization/ablations.md`](normalization/ablations.md) - short result table
 - [`normalization/findings.md`](normalization/findings.md) - full findings log
+- [`normalization/images/`](normalization/images/) - figures used by the tutorial

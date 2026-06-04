@@ -1,209 +1,366 @@
-# Normalization as a small research project
+# Normalization: How To Test A Better RMSNorm
 
-This note is for the person who wants to add a new normalization idea without getting fooled by a lucky stack.
+This tutorial teaches one small research habit:
 
-The short version:
+**A normalization trick is only useful if it survives a fair baseline.**
 
-- A normalization idea is not "good" just because it helps once.
-- The same norm can look different in a richer stack and in a stripped baseline.
-- If you want a result people can trust, test the norm in both settings.
+We found several norms that beat `RMSNorm` on tiny transformers, but the winner
+changed when we stripped the architecture down. That is the real lesson.
 
-## What "full stack" means
+By the end, you should be able to:
 
-In this repo, the "full stack" is not the norm itself.
-It is the larger recipe around it:
+- explain why outlier channels can make `RMSNorm` too aggressive
+- add a new norm to this repo
+- run it in both a rich stack and a clean baseline
+- avoid claiming a lucky one-stack result as a general discovery
 
-- `value embeddings`
-- `q-gain`
-- `SWA384`
-- `RoPE250k`
+Supporting notes:
 
-The full-stack run asks:
+- [`ablations.md`](ablations.md) is the compact result table.
+- [`findings.md`](findings.md) is the raw research log.
+- Machine-readable metrics live in [`../../../results/tiny1m_0604`](../../../results/tiny1m_0604).
 
-> If we keep the whole recipe fixed, which normalization is best?
+## Step 1: Start With The Simplest Picture
 
-That is how we found that `pnorm1.5` looked strong.
+A transformer residual stream is a vector.
 
-But the clean-baseline run asked a different question:
-
-> If we remove the helpers and leave a plain full-attention transformer, which normalization still wins?
-
-That is where the answer shifted toward `LayerNorm` and `pnorm1.75`.
-
-The lesson is not that one result was wrong.
-The lesson is that a norm is part of a system, not a universal law.
-
-## What the code is doing
-
-Three files matter most:
-
-- [train_llm.py](/Users/vukrosic/my-life/llm-research-kit-scaling/train_llm.py)
-- [models/layers.py](/Users/vukrosic/my-life/llm-research-kit-scaling/models/layers.py)
-- [configs/llm_config.py](/Users/vukrosic/my-life/llm-research-kit-scaling/configs/llm_config.py)
-
-`train_llm.py` exposes the knobs:
+For one token, imagine the hidden state is:
 
 ```text
---norm_type
---qk_norm_type
---v_norm_type
---use_layernorm
+x = [0.8, -0.7, 0.6, -0.9, ..., 8.0]
 ```
 
-`models/layers.py` turns those strings into actual modules.
-The factory is simple on purpose:
+Most channels are small.
+One channel is huge.
 
-```python
-if nt.startswith("pnorm"):
-    return PNorm(dim, p)
-if nt.startswith("clipnorm"):
-    return ClipNorm(dim, k)
-if nt in _NORM_REGISTRY:
-    return _NORM_REGISTRY[nt](dim)
-if nt == "layernorm" or use_layernorm:
-    return nn.LayerNorm(dim, elementwise_affine=True)
-return nn.RMSNorm(dim)
+That huge channel is not necessarily a bug. In real transformers, some channels
+become "massive activations" that behave like learned biases. They can carry
+useful information.
+
+The problem is what happens when the norm uses that huge channel to scale the
+whole vector.
+
+![RMSNorm and pnorm1.5 denominator contributions](images/mechanism.png)
+
+`RMSNorm` uses an L2-style denominator:
+
+```text
+denom = sqrt(mean(x^2))
 ```
 
-That means the pattern for a new norm is clear:
+Squaring makes the huge channel dominate the denominator.
+Then every other channel gets divided down too hard.
 
-1. Write a small `nn.Module`.
-2. Register it in the factory.
-3. Add a CLI string if you need one.
-4. Run it against `RMSNorm`.
+A milder p-norm, like `pnorm1.5`, still divides by a real magnitude, but it is
+less dominated by the single largest channel:
 
-## What the data says
+```text
+denom = mean(abs(x)^1.5)^(1 / 1.5)
+```
 
-The current tiny1m evidence is already enough to teach something useful.
+The idea is not to delete the outlier.
+The idea is to stop the outlier from controlling the entire scale estimate.
 
-On the richer stack:
+## Step 2: Define The Norms We Tested
+
+All of these norms are nearly parameter-free.
+Most have the same learnable per-channel gain `weight`.
+
+The important family is:
+
+```text
+pnorm_p(x) = x / mean(abs(x)^p)^(1 / p)
+```
+
+Special cases:
+
+| norm | p or formula | intuition |
+|---|---:|---|
+| `pnorm1` | `p = 1` | robust, mean absolute value |
+| `pnorm1.5` | `p = 1.5` | middle ground |
+| `RMSNorm` | `p = 2` | standard L2-style scale |
+| `pnorm3` | `p = 3` | more sensitive to large channels |
+
+We also tried:
+
+| norm | idea |
+|---|---|
+| `LayerNorm` | subtract mean, divide by standard deviation |
+| `channelscale` | learn a pre-scale before RMSNorm |
+| `median` | divide by median absolute activation |
+| `peak` | divide by max absolute activation |
+| `squash` | use `tanh` without a divide-by-magnitude step |
+| `center` | subtract mean without dividing by magnitude |
+
+The failures matter as much as the wins.
+They tell us the rule is not "be maximally robust."
+
+The rule is:
+
+```text
+divide by a smooth all-channel magnitude,
+but do not let one huge channel dominate it.
+```
+
+## Step 3: Compare In The Rich Stack
+
+First we tested the norm inside the current tiny1m recipe:
+
+```text
+value embeddings + q-gain + SWA384 + RoPE250k
+```
+
+This is the rich stack.
+It asks:
+
+```text
+If we keep the rest of the recipe fixed,
+which normalization works best?
+```
+
+![Full-stack normalization result](images/full_stack_results.png)
+
+The full-stack result was clear:
 
 | norm | val_loss | read |
 |---|---:|---|
-| `pnorm1.5` | `6.3063` | best full-stack norm |
+| `pnorm1.5` | `6.3063` | best |
 | `pnorm1` | `6.3156` | strong |
 | `channelscale` | `6.3253` | strong |
+| `LayerNorm` | `6.3487` | around baseline |
 | `RMSNorm` | `6.3584` | baseline |
 
-On the clean baseline:
+This is a real result, but it is not the whole story.
+
+The rich stack contains several other helpful changes.
+So the norm might be winning because it fits that recipe, not because it is a
+universal replacement for `RMSNorm`.
+
+That is why the next step matters.
+
+## Step 4: Strip The Architecture Down
+
+The clean baseline removes the helper tricks:
+
+```text
+no value embedding
+no q-gain
+no sliding-window attention
+plain full attention
+default RoPE
+```
+
+This asks a different question:
+
+```text
+If the transformer is plain,
+which norm still wins?
+```
+
+![Clean-baseline normalization result](images/clean_baseline_results.png)
+
+The answer changed:
 
 | norm / placement | val_loss | read |
 |---|---:|---|
 | `LayerNorm` | `6.3628` | best clean-baseline run |
+| body + QK `pnorm1.5` | `6.3922` | attention placement helps |
+| body + V `pnorm1.5` | `6.4025` | value placement helps |
 | `pnorm1.75` | `6.4088` | best plain p-norm |
 | `pnorm1.5` | `6.4387` | beats RMSNorm, but not best here |
 | `RMSNorm` | `6.4516` | clean baseline |
 
-So the useful idea is not "replace RMSNorm with one magic norm".
-It is:
+This is the key teaching moment.
 
-- Mild robustness helps.
-- The exact best norm depends on the architecture around it.
-- Attention-side placement can matter as much as the body norm.
+`pnorm1.5` was best in the rich stack.
+It still beat `RMSNorm` in the clean baseline.
+But it was no longer the winner.
 
-## How to test a new norm properly
+On the plain transformer, centering helped: `LayerNorm` won.
+The best plain p-norm also moved from `p = 1.5` to `p = 1.75`.
 
-This is the workflow I would teach another engineer:
+So the claim should not be:
 
-1. Start with the full stack.
-2. Test one norm change at a time.
-3. Compare against `RMSNorm`.
-4. Re-run the same norm on a clean baseline.
-5. If the result still looks good, repeat it on more than one seed.
+```text
+pnorm1.5 is always better than RMSNorm.
+```
 
-That progression matters because it separates three questions:
+The better claim is:
 
-- Does the norm help inside the richer recipe?
-- Does it still help when the recipe is stripped down?
-- Is it real signal or just seed noise?
+```text
+RMSNorm is not sacred.
+Mildly robust norms can help.
+The best norm depends on the surrounding architecture.
+```
 
-The repo already has scripts that follow that pattern:
+## Step 5: Add A New Norm In Code
 
-- `scripts/queue_tiny1m_norm4.sh`
-- `scripts/queue_tiny1m_norm5.sh`
+The code path is intentionally small.
 
-## A tiny example
+Open [`../../../models/layers.py`](../../../models/layers.py).
 
-Suppose you want to try a new norm called `robustcenter`.
-
-The minimum path is:
+The norm factory is:
 
 ```python
-class RobustCenter(nn.Module):
-    def __init__(self, dim):
+def make_norm(dim: int, norm_type: str = "rmsnorm", use_layernorm: bool = False):
+    nt = (norm_type or "rmsnorm").lower()
+    if nt.startswith("pnorm"):
+        ...
+    if nt.startswith("clipnorm"):
+        ...
+    if nt in _NORM_REGISTRY:
+        return _NORM_REGISTRY[nt](dim)
+    if nt == "layernorm" or use_layernorm:
+        return nn.LayerNorm(dim, elementwise_affine=True)
+    return nn.RMSNorm(dim)
+```
+
+To add a norm, write a small `nn.Module`.
+
+Here is a minimal example:
+
+```python
+class CenteredL1Norm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
 
     def forward(self, x):
         xc = x - x.mean(dim=-1, keepdim=True)
-        denom = xc.abs().mean(dim=-1, keepdim=True) + 1e-6
+        denom = xc.abs().mean(dim=-1, keepdim=True) + self.eps
         return self.weight * (xc / denom)
 ```
 
-Then add it to the norm factory:
+Then register it:
 
 ```python
-_NORM_REGISTRY["robustcenter"] = RobustCenter
+_NORM_REGISTRY = {
+    "centeredl1": CenteredL1Norm,
+}
 ```
 
-Then run it like a real research question, not a vibes question:
+Now the CLI can call it:
 
 ```bash
-python train_llm.py --config tiny1m --norm_type robustcenter
+python train_llm.py --config tiny1m --norm_type centeredl1
 ```
 
-If it wins once, test it again on the clean baseline.
-If it still wins, run more seeds.
-If it only wins in one setting, write that down honestly.
+Three knobs matter:
 
-## What to teach readers
+| CLI flag | where it applies |
+|---|---|
+| `--norm_type` | residual stream norm |
+| `--qk_norm_type` | Q and K before attention logits |
+| `--v_norm_type` | V before value aggregation |
 
-If this becomes an article for other people, the main teaching should be:
+That placement distinction is important.
+In the clean baseline, putting `pnorm1.5` on QK or V looked more promising than
+using body-only `pnorm1.5`.
 
-- `RMSNorm` is not sacred.
-- `full stack` is a context, not a theorem.
-- A norm can look excellent in one stack and merely decent in another.
-- The best normalization work is not a single result. It is a controlled comparison across contexts.
+## Step 6: Run The Fair Test
 
-That is the real lesson behind the ablations.
+The safe workflow is:
 
-## What generalizes beyond norms
+![Normalization ablation workflow](images/workflow.png)
 
-The norm result is specific, but the research habit is broader.
-These are the parts I would reuse on other model changes:
+Start with the rich stack.
 
-- Test in a rich stack and a stripped baseline.
-- Keep the true default in the table.
-- Change one thing at a time.
-- Use paired seeds before claiming a win.
-- Prefer mild changes over aggressive ones.
-- Record where the change is applied, not just what it is.
+Then repeat the winner in a stripped baseline.
 
-That workflow catches the difference between a real improvement and a trick that only works because of the surrounding architecture.
+Then repeat the strongest candidates on another seed.
 
-## What the paired-seed check taught us
+In this repo, the relevant queue scripts are:
 
-The follow-up run on seeds 43 and 44 was useful because it made the result less
-vibe-based:
+```text
+scripts/queue_tiny1m_norm4.sh
+scripts/queue_tiny1m_norm5.sh
+scripts/queue_tiny1m_norm6.sh
+```
 
-| norm | seed 43 | seed 44 | read |
-|---|---:|---:|---|
-| layernorm | 6.3594 | 6.3644 | stable best |
-| rmsnorm | 6.3931 | 6.3953 | baseline |
-| pnorm1.75 | 6.4019 | 6.4013 | stable, but behind LayerNorm |
-| pnorm1.5 | 6.3963 | 6.5822 | rerun needed before promotion |
+For one local smoke-style run, the command shape is:
 
-The key research lesson is the same one we keep seeing in small-compute work:
-if a change only looks good on one seed or one stack, it is not ready to teach
-as a general principle.
+```bash
+python train_llm.py \
+  --config tiny1m \
+  --norm_type pnorm1.5 \
+  --output_dir runs/my_norm_test
+```
 
-The newest partial sweep on seed 45 adds a fresh candidate, `channelscale`,
-which beat both `LayerNorm` and `RMSNorm` on that run. That is exciting, but it
-still needs the second seed before it can graduate from "lead" to "result."
+For a clean-baseline-style run, remove the helper architecture flags and compare
+directly against `RMSNorm` and `LayerNorm`.
 
-The more universal workflow is:
+Do not promote a norm because it won once.
+Promote it when the table tells a stable story.
 
-1. Test the idea in the richer stack.
-2. Test it in the stripped baseline.
-3. Re-run the winners on a second seed.
-4. Only then write the takeaway.
+## Step 7: Read Failures Correctly
+
+The failures gave us the most useful boundary:
+
+| failed idea | what happened | lesson |
+|---|---|---|
+| `center` | diverged / NaN | centering alone is not normalization |
+| `squash` | diverged | a bounded nonlinearity did not replace scale control |
+| `median` | much worse | too much robustness loses useful scale |
+| `peak` | weak | one channel is not enough information |
+| `clipnorm3` | no real gain | outliers are functional, not pure noise |
+
+This is why the result is subtle.
+
+Outlier channels are not trash.
+They are part of the learned representation.
+
+A good norm should reduce their ability to dominate the denominator while still
+letting them participate in the vector.
+
+## Step 8: What We Actually Learned
+
+The clean lesson is:
+
+```text
+RMSNorm is a strong convention, not a law.
+Mild robustness can improve small transformers.
+The best norm is stack-dependent.
+```
+
+Current evidence:
+
+| setting | strongest read |
+|---|---|
+| rich stack | `pnorm1.5` was best |
+| clean baseline | `LayerNorm` was best |
+| clean p-norm sweep | `pnorm1.75` was the best plain p-norm |
+| latest partial seed | `channelscale` is a promising lead, not confirmed |
+
+That is a better tutorial than a single winner.
+
+It teaches how to avoid fooling yourself.
+
+## Tiny Hand Check
+
+Suppose you test a new norm and get:
+
+| setting | your norm | RMSNorm |
+|---|---:|---:|
+| rich stack | 6.31 | 6.36 |
+| clean baseline | 6.47 | 6.45 |
+
+What should you claim?
+
+Answer:
+
+```text
+The norm helps in the rich stack, but it does not generalize to the clean
+baseline yet. It is a contextual result, not a replacement for RMSNorm.
+```
+
+That answer is less flashy, but it is more useful.
+
+## Done Checklist
+
+- You can explain why L2 scale can be dominated by a few large channels.
+- You can describe why `pnorm1.5` helped in the rich stack.
+- You can explain why the clean baseline changed the winner.
+- You know where to add a norm in [`../../../models/layers.py`](../../../models/layers.py).
+- You know which CLI flags control body, QK, and V normalization.
+- You know not to claim a universal result from one seed or one stack.

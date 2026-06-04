@@ -271,6 +271,8 @@ BUDGET.md
 *.tgz
 *.tar.gz
 *.zip
+pdf-images/
+pdf-images-*/
 docs/**/pdf-images/
 docs/**/pdf-images-*/
 
