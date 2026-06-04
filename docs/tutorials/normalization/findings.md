@@ -4,7 +4,7 @@ Single-seed unless noted. Base recipe: value-emb + q-gain + SWA384 + RoPE250k,
 0.94M params / 3M tokens. Noise floor ≈ 0.02 val_loss. All norms are ~param-free,
 so these are confound-free comparisons. Full numbers: `runs/tiny1m_0604_results.md`.
 
-For the short version, see [`docs/tutorials/normalization_ablations/README.md`](/Users/vukrosic/my-life/llm-research-kit-scaling/docs/tutorials/normalization_ablations/README.md).
+For the short version, see [`ablations.md`](ablations.md).
 
 ## Study 1 — invented norms (#90)
 

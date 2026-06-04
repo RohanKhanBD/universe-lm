@@ -1,8 +1,8 @@
 # Normalization ablations: what works, what breaks
 
-This is the short companion to [`docs/norm-findings-0604.md`](/Users/vukrosic/my-life/llm-research-kit-scaling/docs/norm-findings-0604.md).
+This is the short companion to [`findings.md`](findings.md).
 
-For the teaching version that explains how to add and evaluate a new norm, see [`docs/tutorials/normalization_research/README.md`](/Users/vukrosic/my-life/llm-research-kit-scaling/docs/tutorials/normalization_research/README.md).
+For the teaching version that explains how to add and evaluate a new norm, see [`README.md`](README.md).
 
 Research question:
 
