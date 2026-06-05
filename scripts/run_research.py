@@ -62,6 +62,7 @@ ABLATION_MODULES = {
     "attention_logits": "configs.attention_logits_ablations",
     "data_packing": "configs.data_packing_ablations",
     "optimizer_routing": "configs.optimizer_routing_ablations",
+    "query_tiny": "configs.query_tiny_ablations",
 }
 
 # query lives in configs.llm_config; its canonical 29 are listed in experiments.md.
