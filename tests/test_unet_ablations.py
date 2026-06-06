@@ -1,7 +1,8 @@
 """Verify every U-Net skip ablation instantiates and behaves as expected.
 
-Run from repo root:
+Run from anywhere:
     python3 tests/test_unet_ablations.py
+    python3 -m tests.test_unet_ablations
 
 For each planned ablation:
   - The model instantiates without error.
@@ -13,7 +14,14 @@ For each planned ablation:
 
 Also asserts that out-of-bounds skip_count and invalid gate_type both raise.
 """
+import os
 import sys
+
+# Make the repo root importable regardless of where this is invoked from.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import torch
 from configs.llm_config import Tiny1M3MConfig
 from models.llm import MinimalLLM
