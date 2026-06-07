@@ -300,3 +300,8 @@ results/**/figures/**
 # Local experiment pulls and scratch (mirrored by runs/ convention)
 local_results/
 tmp/
+
+# Project-local scratch (analysis scripts, raw metrics, regenerated figures).
+# Re-generate with `python scratch/make_graphs.py` from the unzipped
+# Kaggle metrics tree under scratch/results/.
+scratch/
