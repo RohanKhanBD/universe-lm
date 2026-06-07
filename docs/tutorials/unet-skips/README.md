@@ -6,37 +6,25 @@ We added this trick to a small model and validation loss improved:
 
 ![val loss curves](images/01_val_loss_curves.png)
 
-A U-Net skip connects an early layer in a transformer to a matching late layer.
+A U-Net skip connects an early transformer layer to a matching late one.
 
 It is just a small learned bridge that the model can scale up or down.
 
 The bridge starts almost off, so it never hurts the model at the start of training.
 
-Late layers can reach back to the simple, local features that the early layers already saw.
-
-It also gives gradients a shorter path back to the early layers.
-
-That shorter path is what helps deep models train.
+Late layers can reach back to the simple, local features the early layers saw, and gradients get a shorter path back to the start.
 
 ![u-net skip architecture](images/unet_architecture.png)
 
 ## How it works, step by step
 
-A deep transformer processes tokens one layer at a time.
+A deep transformer processes tokens one layer at a time, and each layer only reads the layer right below it.
 
-Each layer only reads the output of the layer right below it.
+Early layers capture simple, local patterns.
 
-Early layers tend to capture simple, local patterns.
+By the late layers those early details can get washed out.
 
-By the time information reaches the late layers, those early details can get washed out.
-
-A U-Net skip fixes this by saving the output of each early layer.
-
-It then adds each saved output back into a matching late layer.
-
-The pairing is symmetric, like the two sides of a letter U.
-
-The first layer connects to the last, the second to the second-to-last, and so on.
+A U-Net skip saves each early layer's output and adds it back into a matching late layer - first to last, second to second-to-last, and so on.
 
 ```text
 layer 0  ->  layer 7
@@ -45,25 +33,15 @@ layer 2  ->  layer 5
 layer 3  ->  layer 4
 ```
 
-Each bridge is gated, so the model decides how much of the early output to pull in.
+Each bridge is gated with a sigmoid, so the model decides how much to pull in.
 
-The gate runs through a sigmoid.
-
-The sigmoid keeps the gate strength between 0 and 1.
-
-That makes the gate stable to train.
-
-![the sigmoid gate scales the skip before adding it](images/unet_gate.png)
+The sigmoid keeps the gate in [0, 1] - stable to train.
 
 The gate weight starts at -1.5, so `sigmoid(-1.5)` is about 0.18.
 
-The skip starts small but not exactly zero.
+A small nonzero start matters: a gate at exactly zero gets almost no gradient and can fail to ever turn on.
 
-A small nonzero start matters: a gate that starts at exactly zero gets almost no gradient.
-
-It can fail to ever turn on.
-
-So the skip begins faint, and training raises or lowers it per dimension as the model learns how useful the bridge is.
+![the sigmoid gate scales the skip before adding it](images/unet_gate.png)
 
 ## In code
 
@@ -95,21 +73,13 @@ for i, block in enumerate(blocks):
     x = block(x)
 ```
 
-Put together, the first half writes its outputs.
+The first half writes its outputs, and the second half reads them back scaled by a learned per-dimension gate.
 
-The second half reads them back, scaled by a learned per-dimension gate.
+## Phase 1 ablation
 
-This is the same skip pattern used in the record-setting nanoGPT speedrun, where the sigmoid gate and the small nonzero start are what make it train well.
+Eight runs on a tiny ~1M-param model (12 layers, d_model 64), 733 steps (~3M tokens), all with seed 42.
 
-## Phase 1 ablation - does the bound help, and does skip count matter?
-
-Eight runs on a tiny ~1M-param model (12 layers, d_model 64), trained for 733 steps (~3M tokens), all with seed 42.
-
-The table below is the source of truth.
-
-The three "raw0" rows collapsed to one in the table are bit-identical runs (the skip-count flag was ignored for them, so they all used the default k=6).
-
-### Runs
+The three "raw0" rows below are bit-identical runs - the skip-count flag was ignored, so all three used the default k=6.
 
 | run | use_unet_skips | gate_type | gate_init | skip_count | val_loss | val_ppl |
 |---|---|---|---|---|---|---|
@@ -122,63 +92,19 @@ The three "raw0" rows collapsed to one in the table are bit-identical runs (the 
 
 ![final val_loss bar chart - sigmoid wins by 0.04-0.07](images/02_final_loss_bar.png)
 
-### What the data shows
+### Findings
 
-The sigmoid bound beats raw scalar gates by 0.04-0.07 val_loss.
-
-The best run (`sigmoid_m15`, 6.3816) is 0.039 below the best raw run.
-
-It is 0.061 below the no-skip control.
-
-The benefit is robust to the initial value.
-
-`sigmoid_m15` and `sigmoid_m30` differ by only 0.0015 val_loss.
-
-That is well inside run-to-run noise.
+The sigmoid bound beats raw scalar gates by 0.04-0.07 val_loss, and the bound - not the start point - is what helps: `sigmoid(-1.5)` and `raw_init=0.18` start with the same effective weight, but sigmoid ends 0.046 val_loss better because the [0, 1] bound keeps the gate from drifting to values that would dominate the residual stream.
 
 ![sigmoid vs raw - same init, sigmoid ends lower](images/03_sigmoid_vs_raw.png)
 
-The sigmoid advantage comes from the [0, 1] bound, not the start point.
-
-`sigmoid(-1.5)` is about 0.18 - the same effective skip weight as `raw_init=0.18` at initialization.
-
-The two runs start with identical skip signal strength, but sigmoid ends 0.046 val_loss better.
-
-The bound prevents the gate from drifting to large values that would let the skip dominate the residual stream.
+Skip count is non-monotonic for raw gates. With k=2 (only the deepest two bridges) the model is *worse* than no skips, but k=6 (the full U) is *better* - it needs a minimum bridge count to overcome the dead-start of raw gates at 0.
 
 ![skip count sweep - only one k=2 point is real (see caveats)](images/04_skip_count_scatter.png)
 
-Skip count is non-monotonic for raw gates.
-
-With raw gates at init 0, k=2 (only the deepest two bridges) is *worse* than no skips at all.
-
-k=6 (the full U) is *better* than no skips.
-
-The model needs a minimum bridge count to overcome the dead-start of raw gates at 0.
-
-Fewer than that minimum is a net loss.
-
 ### Caveats
 
-The skip_count sweep is incomplete.
-
-Of the original 8 runs, only `raw0_k2_real` actually used a non-default `skip_count`.
-
-The `raw0`, `raw0_k2`, and `raw0_k4` names were cosmetic.
-
-The launch script never passed the skip-count flag for those three, so all three used the default k=6 and produced bit-identical val_loss curves.
-
-A re-run with the flag actually passed is needed to map out k=1, 2, 4, 5 for both families.
-
-The `raw0_k2_real` run used a different code path from the others (the "real" branch in the original training script's history).
-
-Whether the k=2 dip is a property of the architecture or an artifact of that branch is unresolved.
-
-All runs are tiny1m at 3M tokens.
-
-Scaling up is the obvious next test.
-
-If the sigmoid-vs-raw gap holds or grows at a 5-10M model, the bound is doing real work and not just a small-model artifact.
+The skip_count sweep is incomplete - only `raw0_k2_real` actually used a non-default skip count, so k=1, 3, 4, 5 are untested for both families. The `raw0_k2_real` run also used a different code path ("real" branch), so the k=2 dip may be a branch artifact, not a property of the architecture. All runs are tiny1m at 3M tokens; if the sigmoid-vs-raw gap holds or grows at 5-10M, the bound is doing real work.
 
 ### Want to go deeper in AI research? I'll coach you 1-on-1
 
