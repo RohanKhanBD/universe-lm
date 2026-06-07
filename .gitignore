@@ -296,3 +296,7 @@ results/**/figures/**
 **/make_*.py
 **/param_count.py
 **/*_analysis.py
+
+# Local experiment pulls and scratch (mirrored by runs/ convention)
+local_results/
+tmp/
