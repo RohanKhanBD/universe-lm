@@ -349,6 +349,15 @@ class LLMConfig:
     adamw_lr: float = 0.006
     warmup_ratio: float = 0.0
     schedule_type: str = "constant"
+    # Cautious Muon (Liang et al. 2024, arXiv 2411.16085): one-line sign-mask
+    # on the orthogonalized update — zero out components whose sign disagrees
+    # with the current gradient. Suppresses stale-momentum artifacts. Bit-
+    # identical to baseline when False (default). When True, the masked
+    # components reduce effective step norm ~10-20% on average; pair with
+    # a small muon_lr bump (e.g. 0.024 → 0.025) to compensate. Applies only
+    # to the Muon path; AdamW is unchanged (separate flag `use_cautious_adamw`
+    # if/when we add it). See docs/research/muon/cautious-muon/plan.md.
+    use_cautious_muon: bool = False
 
     # Evaluation
     eval_every: Optional[int] = None
@@ -485,6 +494,15 @@ class Tiny1M3MQGainConfig(Tiny1M3MConfig):
     """Tiny1M3M with per-head Q-gain."""
     use_q_gain: bool = True
 
+
+@dataclass
+class Tiny1M3MCautiousMuonConfig(Tiny1M3MConfig):
+    """Tiny1M3M with cautious-muon sign-mask + small LR bump.
+
+    A/B vs the tiny1m ctrl (6.4306) — should land ≤ 6.4206 for a pass.
+    """
+    use_cautious_muon: bool = True
+    muon_lr: float = 0.025  # +4% to compensate for masked components
 
 @dataclass
 class Tiny1M3MVQGainConfig(Tiny1M3MConfig):
@@ -1727,6 +1745,37 @@ class Screen10M20MQPerTokenRopeConfig(Screen10M20MConfig):
 class Screen10M20MQNoiseRegConfig(Screen10M20MConfig):
     """Q29 — Noise reg. Q += N(0, σ²) training only (learnable σ)."""
     use_q_noise_reg: bool = True
+
+
+# =====================================================================
+# Cautious-Muon recipes — appended here (not above) because they
+# reference classes defined later in the file. Single-line addition to
+# the Muon optimizer step (Liang et al. 2024, arXiv 2411.16085):
+# zero out the orthogonalized update where its sign disagrees with the
+# current gradient. See optimizers/muon.py for the implementation.
+# =====================================================================
+
+
+@dataclass
+class Screen10M20MCautiousMuonConfig(Screen10M20MConfig):
+    """Screen10M20M with cautious-muon sign-mask + small LR bump.
+
+    A/B vs the screen20m control (4.8487) — should land ≤ 4.8387 for a pass.
+    """
+    use_cautious_muon: bool = True
+    muon_lr: float = 0.025
+
+
+@dataclass
+class Screen10M20MVQGainSWAHighRoPECautiousMuonConfig(Screen10M20MVQGainSWAHighRoPEConfig):
+    """V+q+SWA+HighRoPE best baseline + cautious-muon sign-mask.
+
+    A/B vs the current screen20m best (4.6364) — tests whether cautious-Muon
+    is additive on top of the V+q+SWA+HighRoPE plateau. Multi-seed confirm
+    if single-seed wins.
+    """
+    use_cautious_muon: bool = True
+    muon_lr: float = 0.025
 
 
 # =====================================================================

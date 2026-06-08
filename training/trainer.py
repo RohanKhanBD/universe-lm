@@ -136,6 +136,7 @@ def setup_muon_optimizer(model: nn.Module, config: LLMConfig):
         adamw_lr=getattr(config, "adamw_lr", 0.006),
         nesterov=getattr(config, "muon_nesterov", True),
         lazy_ortho_steps=getattr(config, "muon_lazy_ortho_steps", 1),
+        cautious=getattr(config, "use_cautious_muon", False),
     )
     device = resolve_device(getattr(config, "device", "auto"))
     adamw_optimizer = torch.optim.AdamW(

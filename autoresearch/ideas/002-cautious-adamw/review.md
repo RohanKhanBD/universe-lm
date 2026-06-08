@@ -1,0 +1,35 @@
+# Review log — 002 cautious-adamw
+
+## r2 — 2026-06-08 — verdict: revise
+
+- **r1 findings addressed: 4/4 mechanism+tier+seeds+1D-split.** Mechanism paragraph (`idea.md` line 14) now states complementarity explicitly without self-contradiction. Tier moved to screen20m with the noise-band citation. 3-seed protocol committed. The A/B/C 1D-bucket split is laid out with kill-criteria. Good revisions on all four.
+- **Wiring section is factually wrong — blocker.** `idea.md` line 25 claims "the AdamW 1D path is computed inside `Muon.step()` (`optimizers/muon.py:147`, the `adamw_lr` group)." This is incorrect. `optimizers/muon.py:75` shows `adamw_lr` is a **Muon hyperparameter** used only in the `rms_match` scaling math at `muon.py:147-150` — it is not a parameter group. The actual AdamW path is `torch.optim.AdamW` instantiated separately at `training/trainer.py:142`. **Fix:** rewrite `Wiring` to: "Subclass `torch.optim.AdamW` as `CautiousAdamW` (copy `Adam._single_tensor_adam` body, apply `mask = (update.sign() == grad.sign()).to(update.dtype); update *= mask` just before `param.add_(update, alpha=-lr)`), swap it in at `training/trainer.py:142`. ~40 LoC, bit-identical to baseline when `cautious=False`." The "~5 LoC" estimate must go.
+- **Condition-mapping vs actual routing: missing.** The A/B/C buckets in `1D params, split` are abstract. The real AdamW routing at `training/trainer.py:79-122` puts the following in AdamW: every param where `ndim != 2` OR (`ndim == 2` AND name contains `token_embedding` or `norm`) OR is `out_proj` (when `muon_for_output=False`). Reviser must name buckets against this routing: e.g. condition A = mask on `token_embedding` + `emb_proj` (the 2D embedding params, ~91% of the AdamW path's grads); condition B = mask on `norm.weight` (the 1D scale gain) + any 1D scalar (q_gain, k_gain). State which condition C-style runs are skipped if A or B kills.
+- **Compute budget unaccounted.** 3 conditions × 3 seeds × ~19m screen20m = ~3 h of compute on the RTX 3050. Either (a) commit the cost in `Run notes` and budget the slot, or (b) drop condition C from the first sweep (run A and B; C = A+B is recoverable from the two single-bucket results if the masks are independent). State the decision.
+- **Fallback section is incoherent — fix.** `idea.md` line 33 claims 001's screen20m follow-up will "exercise the AdamW path *with the same config*". It will not. 001 sets `use_cautious_muon=True`, which only flips Muon's mask (`muon.py:158-162`); the AdamW path is untouched. The "free contrast" claim is wrong. Either (a) delete the Fallback section, or (b) rewrite it as: "after 001 lands on screen20m, run a 2-flag combo (`use_cautious_muon=True` + `use_cautious_adamw=True`) on top of the same baseline — gives the additive answer in one run instead of two."
+- **Round-2 cut targets if LoC budget tight (still applies):** ship condition A first (embedding-mask is the highest-leverage single bucket and has the clearest mechanistic story). Condition B follows only if A is in noise.
+
+## r1 — 2026-06-08 — verdict: revise
+
+**Verdict: keep, but downgrade its expected-Δ range and add a fallback path. Currently the idea is "do the same thing on a path where the paper itself measured a smaller effect, and only run it if 001 passes" — that's a 2-line note, not an idea.**
+
+## What's good
+- The conditional ("only after 001 passes tiny1m3m val ≤ 6.4206") is exactly the right research hygiene: same mechanism, second path, gated on first path. No wasted compute.
+- Mechanism is symmetric with 001 (same paper, same one-line mask), so the implementation cost is essentially zero once 001's `Muon.cautious` pattern is in the codebase.
+- "If 001 fails, close this idea too" is the correct call and is written down. Many ideas don't pre-commit to their kill condition.
+
+## What's weak
+1. **The mechanism paragraph makes a claim and then hedges it in the same sentence.** "Same sign-mask as Cautious Muon, applied to the AdamW update... Expected delta smaller than Muon's (AdamW updates are already 2nd-moment-normalized, so the stale-momentum artifact is weaker)." That's the *correct* mechanistic story, but it also implies "if 001 doesn't work, AdamW won't either" — which is the *opposite* of what's true. The 2nd-moment normalization makes the cautious mask *more* useful on AdamW in some setups (because the update direction is already near-sign-of-gradient in steady state, so the mask is mostly a no-op and the gain is small — but the *pathological* case where the mask helps is exactly when 2nd-moment scaling pushes the update away from the sign). The doc should make this explicit or drop the reasoning entirely and just say "expected Δ smaller than Muon per Liang et al. Table 1."
+2. **"−0.005 to −0.02" is below the tiny1m3m noise floor.** If this idea runs on tiny1m3m at all, you literally cannot resolve the lower half of that range. Either:
+   - plan for a screen20m / screen10m20m evaluation, or
+   - tighten the lower bound to "expected Δ ≈ −0.005 to −0.01, may be null on tiny1m3m."
+3. **No mention of which 1D params the mask is applied to.** The doc says "gains, scalars, embeddings, head" but doesn't say *why* those. The 1D bucket covers: (a) RMSNorm gain, (b) any learned scalar, (c) embedding rows, (d) LM head. Each of these is sign-meaningful in a different way — the mask is *very* meaningful for embedding rows (a wrong sign on a rarely-used row's update is worse than a zero update) and *barely* meaningful for a constant-sign gain. Splitting the experiment into "mask on embeddings only" vs "mask on everything 1D" would give a much more interpretable result. As written, a null result is uninformative.
+4. **The flag name in the queue (`use_cautious_adamw`) doesn't exist yet in `configs/llm_config.py:360`.** The config comment hints at it ("separate flag `use_cautious_adamw` if/when we add it") but it's not gated through the same code path. Decide now: (a) extend `Muon` to also drive the AdamW path's mask, or (b) make it a new `AdamW` subclass. The queue's flag name implies (a); confirm before promoting to plan.md.
+
+## Suggestions
+- Add a one-line "null result is informative" sentence: e.g. *"a null on embeddings but a hit on gains is useful signal; both null is a close."*
+- Consider dropping the run entirely and just running 001's screen20m follow-up, which will exercise the AdamW path *with the same config* anyway. If `use_cautious_muon=True` ships a screen20m result, the AdamW-1D-mask hypothesis can be re-litigated with the screen20m numbers as a second contrast. Cheaper than a fresh tiny1m3m.
+- The expected-Δ in the queue is "−0.005 to −0.02." On screen20m scale (val ~4.6), that's about a 0.1–0.4% relative reduction. Make sure the screen20m harness is being run with **at least 3 seeds** before promoting a sub-1% effect, or this idea will close on noise.
+
+## Verdict
+Conditionally keep. Either (a) re-scope to embed-only vs gains-only as a 2-condition screen, or (b) defer the standalone idea and re-evaluate after 001's screen20m follow-up lands. Don't promote to plan.md in its current form.

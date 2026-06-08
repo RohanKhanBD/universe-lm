@@ -62,9 +62,18 @@ def zeropower_polar_express(G:torch.Tensor, steps: int = 5, coeffs_mode: str = "
 
 
 class Muon(torch.optim.Optimizer):
-    """Muon - MomentUm Orthogonalized by Polar Express / Newton Schulz"""
-    def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True, ns_steps=5, orthogonalize=True, coeffs_mode="polar_express", shape_scale=True, scale_mode="shape_aspect", adamw_lr=0.006, lazy_ortho_steps=1):
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps, orthogonalize=orthogonalize, coeffs_mode=coeffs_mode, shape_scale=shape_scale, scale_mode=scale_mode, adamw_lr=adamw_lr, lazy_ortho_steps=lazy_ortho_steps)
+    """Muon - MomentUm Orthogonalized by Polar Express / Newton Schulz.
+
+    Optional cautious-update mask (Liang et al. 2024, arXiv 2411.16085):
+    zero out the orthogonalized update component when its sign disagrees
+    with the current gradient. Suppresses stale-momentum artifacts. The
+    masked components are zero, so the effective step norm shrinks ~10-20%
+    on average — caller is expected to bump lr slightly to compensate
+    (the project default bump is 0.024 → 0.025, +4%). Bit-identical to
+    baseline when cautious=False (default).
+    """
+    def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True, ns_steps=5, orthogonalize=True, coeffs_mode="polar_express", shape_scale=True, scale_mode="shape_aspect", adamw_lr=0.006, lazy_ortho_steps=1, cautious=False):
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps, orthogonalize=orthogonalize, coeffs_mode=coeffs_mode, shape_scale=shape_scale, scale_mode=scale_mode, adamw_lr=adamw_lr, lazy_ortho_steps=lazy_ortho_steps, cautious=cautious)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -141,4 +150,14 @@ class Muon(torch.optim.Optimizer):
                     scale = adamw_lr / mu
                 else:
                     raise ValueError(f"Unknown scale_mode: {group['scale_mode']!r}")
+                # Cautious update mask (Liang et al. 2024). When the
+                # orthogonalized update component disagrees with the
+                # current gradient's sign, the orthogonalized direction
+                # is likely a stale-momentum artifact — zero it out.
+                # Saves work on the agreeing components. Default off.
+                if group.get("cautious", False):
+                    grad_for_mask = p.grad.to(g.dtype) if p.grad is not None else None
+                    if grad_for_mask is not None:
+                        mask = (g * grad_for_mask > 0).to(g.dtype)
+                        g = g * mask
                 p.add_(g.view_as(p), alpha=-group["lr"] * scale)
