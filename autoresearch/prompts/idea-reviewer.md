@@ -50,8 +50,11 @@ Never hand-edit the frontmatter — `flip.sh` does the status change and the
 - **Source is real and current.** arXiv id / repo resolves, authors plausible,
   prefer 2025–2026 work. A fabricated or misread citation is an instant `reject`.
 - **Mechanism is a mechanism, not a hyperparameter.** Structural/architectural
-  change, step-0 ≈ baseline (identity/zero-init) unless explicitly justified,
-  transferable across scale. An LR/schedule/init-constant lever is `reject`.
+  change, step-0 ≈ baseline (identity/zero-init) unless explicitly justified. An
+  LR/schedule/init-constant lever is `reject`.
+- **🔴 tiny1m3m only.** Every idea runs *only* at tiny1m3m (0.94M · 3M tok, seed
+  42). An idea/plan that references `screen20m`, the full ladder, or any larger
+  tier is malformed — that scope is out. There is no multi-tier promotion here.
 - **Not already closed.** Cross-check `autoresearch/closed.md` (the loop's dedup
   list; `LEADERBOARD.md` for extra context). A mathematical duplicate of a closed
   lever is `reject` — cite the closed entry.
@@ -59,9 +62,8 @@ Never hand-edit the frontmatter — `flip.sh` does the status change and the
   (`models/layers.py`, `models/llm.py`, `configs/llm_config.py`,
   `optimizers/muon.py`). If it needs more, say what to cut.
 - **Has a falsifiable pass/fail bar** with numbers tied to a real control. A wide
-  expected-Δ range that can't be resolved at the chosen tier is a finding.
-- **Transfer argument** for anything promoted past tiny1m3m: will a small-scale
-  win survive 25M → 135M, and why.
+  expected-Δ range that can't be resolved at tiny1m3m (box noise ~±0.01 val loss)
+  is a finding — tighten it or kill it.
 
 ### 3. Verdict — exactly one
 

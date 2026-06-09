@@ -21,8 +21,9 @@ cycles forever. An idea must clear all three gates before it runs:
 | **Code** | code-implementer | code-reviewer | Does the code *match the spec & run correctly*? |
 
 In the taste and code loops the **doer revises itself**; the definition loop uses
-a separate reviser. Cheap tiny1m3m ideas skip the definition+code gates (cost-gate
-below).
+a separate reviser. **Every idea runs at one tier only — `tiny1m3m` (0.94M params
+· 3M tokens), seed 42** — and takes the full path through all three gates. There
+is no larger tier and no cost-gate shortcut.
 
 ## The one source of truth: `idea.md` frontmatter
 
@@ -84,9 +85,7 @@ miner ─► needs-taste                                    ┌─ GATE 1: TASTE
          │               │
          │          needs-repitch → miner re-pitches → needs-taste (round++)
          │
-         ├─ cheap (tiny1m3m) ──────────────────────────────► needs-run
-         │
-         ▼  (screen20m+, round reset to 1)                 ┌─ GATE 2: DEFINITION ─┐
+         ▼  (round reset to 1)                             ┌─ GATE 2: DEFINITION ─┐
       needs-review
                 │  reviewer → reviewing → review.md r_n verdict
                 ▼
@@ -113,6 +112,31 @@ miner ─► needs-taste                                    ┌─ GATE 1: TASTE
 
 Each gate runs its **own** 3-round budget: on `accept` into the next gate, the
 critic resets `round` to 1.
+
+## Run + evidence (the last mile, single-pass)
+
+`needs-run` is owned by the **runner** (`prompts/runner.md`) — run + pull +
+analyze in one pass; *not* "human, for now." Raw run data is the durable
+`results.json` under `remote-results/<date>-vast-<tier>/` (logs alongside). The
+pipeline-side record is **`evidence.md`** in the idea folder:
+
+```markdown
+# Evidence — NNN <name>
+
+## Verdict: <WIN | NULL>
+- tier, seed 42, box host
+- control val · treatment val · Δ
+- pass/fail bar (from plan.md) → met | not met
+- box check: ctrl vs leaderboard (within noise | DRIFT)
+- raw: remote-results/<dir>/results.json
+- date
+```
+
+Both outcomes flip the idea to `done` (= ran, evidence written, win-or-null
+logged). A **NULL** also gets one line in `closed.md` so it's never re-mined. The
+runner never `reject`s — a clean null is a result. Box-validation rule: a control
+that drifts > ~0.01 val loss from `LEADERBOARD.md` means the box is bad; its
+results aren't trusted and the idea stays `needs-run`.
 
 ## The claim protocol (every agent, every run)
 
@@ -182,12 +206,12 @@ Verdict is exactly one of `accept` (definition gate calls it `approve`) /
   `round: 3` the critic may only `accept` or `reject` — `revise` is forbidden,
   forcing the call. No idea cycles more than 3 times *within a gate*; on `accept`
   into the next gate the critic resets `round` to 1.
-- **Cost-gate the loop.** The gates exist to stop bad ideas *before they burn
-  compute*. Only gate the expensive ones past taste:
-  - tiny1m3m ideas (~2 min on a T4): the taste-reviewer routes `accept` straight
-    to `needs-run`, skipping the definition + code gates.
-  - screen20m+ ideas: full path (`accept` → `needs-review` → … → `needs-run`).
-  - **Taste gates everything** — even cheap ideas must be worth a slot.
+- **🔴 ONE TIER ONLY — `tiny1m3m`.** Every experiment runs at tiny1m3m (0.94M
+  params · 3M tokens, seed 42) and nothing else. No `screen20m`, no full ladder,
+  no multi-tier promotion — that scope is out. An idea whose payoff only appears
+  at larger scale is a `reject` at the taste gate. Because there's a single tier,
+  there is **no cost-gate**: every accepted idea takes the full path
+  `needs-taste → needs-review → needs-code → needs-codereview → needs-run`.
 - **Rejects leave the scan path.** `rejected` → move the folder to
   `autoresearch/ideas/_closed/` and append a line to `autoresearch/closed.md`.
   Active greps stay clean.
@@ -211,3 +235,4 @@ Verdict is exactly one of `accept` (definition gate calls it `approve`) /
 | reviser | `autoresearch/prompts/idea-reviser.md` | `needs-revision` | edits `idea.md`, `round++` |
 | code-implementer | `autoresearch/prompts/code-implementer.md` | `needs-recode`, then `needs-plan` | `plan.md` + code, → `needs-codereview` |
 | code-reviewer | `autoresearch/prompts/code-reviewer.md` | `needs-codereview` | appends `codereview.md`, → `needs-run`/`needs-recode`/`rejected` |
+| runner | `autoresearch/prompts/runner.md` | `needs-run` | `remote-results/<date>-vast-<tier>/{*.log,results.json}` + `evidence.md`, → `done` (and null line in `closed.md`) |

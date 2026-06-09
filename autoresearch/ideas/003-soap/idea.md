@@ -1,8 +1,8 @@
 ---
 id: 003-soap
-status: planning
-round: 2
-updated: 2026-06-09T00:39:45Z
+status: needs-run
+round: 3
+updated: 2026-06-09T01:35:40Z
 ---
 
 # 003 — Soap (Shampoo + Adam)
@@ -36,7 +36,7 @@ Train 100 steps on screen20m with bf16 enabled. After every step, log the eigenv
 Memory cost: eigenbasis is (d_out, d_out) per 2D param. For our scale (d_model ≤ 576, emb ≤ 49152) the basis for `token_embedding` is the dominant term at ~288 MB bf16. The other 2D params are negligible by comparison. Acceptable.
 
 ## Seed protocol
-3 seeds (42/43/44) when |Δ| ≤ 0.03 (i.e. the lower half of the expected range, which single-seed can't resolve). If single-seed pass and |Δ| > 0.03, ship the single seed. If single-seed pass and |Δ| ≤ 0.03, run the other two seeds before promoting to plan.md.
+Seed 42, single seed, per the pipeline hard rule. |Δ| ≤ 0.05 is the noise band; a sub-noise result is logged inconclusive, not re-seeded.
 
 ## Transfer argument
 The eigenbasis converges in O(1) steps at any scale — it's a preconditioner, not a learned feature — so the curvature benefit is scale-invariant. The unknown is whether the eigenbasis is *well-conditioned* at small scale; that's exactly what the pre-flight measures. If the basis is well-conditioned at screen20m, the same mechanism applies at 25M/135M. If it's not, the bf16 pre-flight aborts before the full run, and we close or re-promote as fp32-only.

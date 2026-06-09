@@ -204,8 +204,7 @@ def setup_muon_optimizer(model: nn.Module, config: LLMConfig):
             betas=(0.9, 0.999),
             eps=1e-8,
             weight_decay=config.weight_decay,
-            precondition_frequency=getattr(
-                config, "use_soap_precondition_freq", 10),
+            precondition_frequency=config.use_soap_precondition_freq,
             precondition_eps=1e-6,
         )
         optimizers.append(soap_optimizer)

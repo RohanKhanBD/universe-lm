@@ -30,9 +30,11 @@ positional-encoding levers for an LLM project. **External sources only**
 
 **Project context (read first):**
 - Repo: `/Users/vukrosic/my-life/llm-research-kit-scaling`.
-- Goal: beat SmolLM2-135M with a fully-open 135M model. Tiered evals:
-  `tiny1m3m` (0.94M · 3M tok) → `screen20m` (10M · 20M tok) → `Full`
-  ladder (10M/25M/50M/135M @ 20x Chinchilla).
+- Goal: find mechanisms that lower val loss, screened cheaply.
+- **🔴 ONE TIER ONLY — `tiny1m3m` (0.94M params · 3M tokens), seed 42.** Every
+  idea in this pipeline is run *only* at tiny1m3m. Do not propose, scope, or
+  reference `screen20m`, the full ladder, or any larger tier — those are out of
+  scope. An idea that only pays off at larger scale doesn't belong here.
 - Only **mechanisms / structural changes**, no hyperparameter tuning. Must be
   **transferable** across scale and **identity/zero-init** (step-0 ≈ baseline)
   unless explicitly noted.
@@ -128,10 +130,9 @@ null result would still be informative. This is what the taste gate judges.>
 
 **Always file at `status: needs-taste`** — the taste gate is the first stop for
 *every* mined idea (see [`idea-taste.md`](idea-taste.md)). Don't pre-route to
-`needs-review`/`needs-run`; the taste-reviewer applies the cost-gate on `accept`.
-Record the tier you intend (tiny1m3m vs screen20m+) in the idea body so the taste
-gate can route it. There is no prose `## Status` section; the frontmatter is the
-only status.
+`needs-review`/`needs-run`. Every idea runs at **tiny1m3m, seed 42** — there is no
+tier to choose. There is no prose `## Status` section; the frontmatter is the only
+status.
 
 Then append a row to the **"Not yet foldered"** PENDING list in
 `autoresearch/queue.md` (one line: `Optimizer/Architecture/etc: <name> · <source>`).

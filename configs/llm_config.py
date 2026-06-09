@@ -377,6 +377,14 @@ class LLMConfig:
     # the full screen20m run. See autoresearch/ideas/003-soap/idea.md.
     use_soap: bool = False
     use_soap_precondition_freq: int = 10
+    # RetNet retention kernel (Sun et al. 2023, arXiv 2307.08621):
+    # per-head learnable decay γ_h replaces softmax attention with a
+    # linear-recurrence kernel. v1 = kernel + synthetic probe only
+    # (`models/retention.py` + `tests/test_retention.py`); v2 will
+    # wire it into `MultiHeadAttention.forward` as a separate PR.
+    # Default off → baseline path bit-identical. See
+    # autoresearch/ideas/004-retnet-retention/plan.md.
+    use_retention: bool = False
 
     # Evaluation
     eval_every: Optional[int] = None

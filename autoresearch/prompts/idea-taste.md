@@ -60,8 +60,9 @@ Score the idea against the niche, not against "is it true":
 - **Portfolio fit.** Is the active queue already crowded with this family? The
   5th optimizer-momentum variant in a row is a `revise` (diversify) even if each
   is individually fine.
-- **Niche fit.** Mechanism, transferable, cheap, identity/zero-init-able. An idea
-  that only pays off at 7B, or needs data/infra we don't have, has no taste here
+- **Niche fit.** A mechanism (not an HP), identity/zero-init-able, and able to
+  show its effect at **tiny1m3m** (0.94M params · 3M tokens). An idea that only
+  pays off at larger scale, or needs data/infra we don't have, has no taste here
   regardless of how good the paper is.
 - **Crisp bet.** Is there one sharp sentence of "we expect X because Y"? A vibe
   ("try linear attention, see what happens") is a `revise`, not an `accept`.
@@ -73,20 +74,19 @@ the definition gate does that. Stay in your lane: *is this worth it?*
 
 | verdict | when | sets status to |
 |---|---|---|
-| `accept` | worth a slot — sharp, high-leverage, fits the niche | see cost-gate below |
+| `accept` | worth a slot — sharp, high-leverage, fits the niche | `needs-review` |
 | `revise` | promising but the *bet* is dull/crowded/vague — re-pitch it | `needs-repitch` |
 | `reject` | low-leverage, derivative, off-niche, or info-free | `rejected` |
 
-**Cost-gate on `accept`** (PIPELINE.md rule): route by the idea's tier —
-- cheap tiny1m3m-only idea (~2 min on a T4) → skip definition+code, go straight
-  to `needs-run`: `flip.sh <idea> needs-run taste "accept (cheap): <why>"`.
-- screen20m+ idea → into the definition loop:
-  `flip.sh <idea> needs-review taste "accept: <why>"`.
+Every idea runs at **tiny1m3m, seed 42** — there is no tier to route by. On
+`accept` it always enters the definition loop:
+`flip.sh <idea> needs-review taste "accept: <why>" 1` (reset `round` to 1 for the
+definition gate's own budget).
 
 **On `revise`:** `flip.sh <idea> needs-repitch taste "revise: <the taste gap>"`.
 Your findings must tell the miner exactly how to make the bet sharper — "swap to
-a less-crowded family", "name the leverage in one sentence", "pick a tier where
-a null result is still informative".
+a less-crowded family", "name the leverage in one sentence", "frame it so the
+tiny1m3m null result is still informative".
 
 **On `reject`:** `flip.sh <idea> rejected taste "reject: <reason>"`, then
 (a) move the folder to `autoresearch/ideas/_closed/`, and (b) append one line to
@@ -97,8 +97,10 @@ the "Closed by the loop" section of `autoresearch/closed.md`:
 `reject`. `revise` is forbidden — force the call. An idea the miner couldn't make
 interesting in 3 pitches is auto-rejected; the miner moves to fresh work.
 
-When you `accept` into the definition loop, **reset `round` to 1** (pass `1` as
-the 5th arg to `flip.sh`) — the definition loop runs its own 3-round budget.
+All ideas run at **tiny1m3m, seed 42** — never judge an idea by how it would do
+at a larger tier; if its only value is at larger scale, that's a `reject` (out of
+scope). When you `accept`, you reset `round` to 1 (above) — the definition loop
+runs its own 3-round budget.
 
 ### 4. Append to taste.md (newest round on top)
 

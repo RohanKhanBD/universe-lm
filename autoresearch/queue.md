@@ -14,6 +14,8 @@ human-readable view of it. Regenerate with
 
 Tracks which folder occupies which **GPU slot** — remote execution, *not* the
 pipeline `status` field. "Run state" below = idle/in-progress/done on the metal.
+Owned by the **runner** (`prompts/runner.md`): it fills/updates these rows as it
+launches and pulls. Raw results land in `remote-results/<date>-vast-<tier>/`.
 
 | Slot | Folder | Run | Run state |
 |---|---|---|---|
@@ -38,6 +40,7 @@ status into this file — that is exactly the drift that breaks the loop.
 | 004 | `004-retnet-retention/` | linear-attention retention (parallel/recurrent) | −0.02 to −0.06 (if transfers) |
 | 005 | `005-decoupled-qkv-muon/` | split fused qkvo into 4 matrices for Muon routing | −0.005 to −0.02 |
 | 006 | `006-schedule-free-adamw/` | AdamW w/o LR schedule, iterate-averaging | −0.005 to −0.02 |
+| 007 | `007-sigmoid-loss/` | per-token sigmoid + z-loss replacing softmax CE | −0.005 to −0.02 |
 
 ## PENDING — not yet foldered (migrate on first touch)
 

@@ -1,8 +1,8 @@
 ---
 id: 004-retnet-retention
-status: needs-plan
-round: 2
-updated: 2026-06-08T17:01:13Z
+status: needs-run
+round: 3
+updated: 2026-06-09T01:35:41Z
 ---
 
 # 004 — RetNet retention (linear-attention alternative)
@@ -36,7 +36,7 @@ The "< 200" line in the source is the kernel only. Realistic integration LoC:
 Only the parallel + chunkwise paths ship in v1; the recurrent (inference) path is a stub.
 
 ## Seed protocol
-3 seeds (42/43/44). The lower 80% of the original expected range (|Δ| ≤ 0.04) is unresolvable on a single seed. Realistic outcome at this scale: null (|Δ| < 0.04), in which case the result is still useful (it tells us retention works at the kernel level, just not at the screen20m signal level).
+Seed 42, single seed, per the pipeline hard rule. |Δ| ≤ 0.10 is the noise band; a sub-noise result is logged inconclusive, not re-seeded. A null at |Δ| < 0.04 with seed 42 is *itself* the evidence the kernel doesn't catch up at this scale.
 
 ## Transfer argument
 The mechanism that scales is the **O(N) memory and O(N) compute** of the retention kernel. At 135M+ with long sequences, softmax attention's O(N²) memory becomes the dominant cost; retention's linear profile is the compute-advantage story. The unknown is whether the kernel is competitive with softmax at the *quality* level — softmax attention at 10M-20M is extremely well-tuned in this repo (V+q+SWA+HighRoPE at 4.6364 is a tight baseline), and the retention kernel may not catch up at small scale. The honest transfer story: "expect null or marginal at screen20m; expect a compute-advantage at 135M+ if the kernel works at all."

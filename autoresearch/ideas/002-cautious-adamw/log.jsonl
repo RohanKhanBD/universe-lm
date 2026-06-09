@@ -5,3 +5,5 @@
 {"ts":"2026-06-08T13:22:17Z","agent":"reviewer","idea":"002-cautious-adamw","from":"reviewing","to":"needs-plan","round":3,"note":"verdict: approve"}
 {"ts":"2026-06-08T13:52:46Z","agent":"code-impl","idea":"002-cautious-adamw","from":"needs-plan","to":"planning","round":3,"note":"claimed"}
 {"ts":"2026-06-08T13:55:55Z","agent":"code-impl","idea":"002-cautious-adamw","from":"planning","to":"needs-run","round":3,"note":"plan+code done: CautiousAdamW + use_cautious_adamw str flag (none/embedding/gain/all) + trainer gate"}
+{"ts":"2026-06-09T00:58:36Z","agent":"runner","idea":"002-cautious-adamw","from":"needs-run","to":"running","round":3,"note":"claimed: running A (embedding) then B (gain) at tiny1m3m per user tier-policy"}
+{"ts":"2026-06-09T01:02:18Z","agent":"runner","idea":"002-cautious-adamw","from":"running","to":"done","round":3,"note":"NULL: A=+0.0003 B=-0.0066 at tiny1m3m (both in noise, plan expected ~±0.06-0.16 noise band); re-run on screen20m is the resolvable tier per plan"}

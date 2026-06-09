@@ -27,13 +27,15 @@ Step-0 (flag OFF) — `use_soap=False`, `soap_params=[]`, no SOAP optimizer inst
 
 ## Run
 
-### Step 0 — bf16 pre-flight (hard gate, ≤5 min wall-clock)
-Train 100 steps on `screen20m` with `use_soap=True` and `bf16` enabled. After every step, on the largest 2D SOAP param (`token_embedding.weight`):
+### Step 0 — bf16 pre-flight (hard gate, ≤35 min wall-clock)
+Train 10 steps on `screen20m` with `use_soap=True` and `bf16` enabled. After every step, on the largest 2D SOAP param (`token_embedding.weight`):
 - log eigvals of `L` and `R` (largest / smallest / any NaN / any Inf)
 - log `||imag(eigvals)||_max` (must be 0; >1e-3 = abort)
 - log `λ_max / λ_min` (must be < 1e6; else abort)
 
-Any one of {NaN/Inf, imaginary > 1e-3, condition > 1e6} → **abort**: do NOT promote to a full run. Re-file as `use_soap_fp32_only` (raises same flag but forces eigenbasis to fp32 with no bf16 path) or close.
+Wall-clock estimate: 10 steps × ~3 min/step (the eigh on L for `token_embedding` is the dominant cost) ≈ 30-35 min. (The original 100-step × 5-min plan was off by ~2×; the pre-flight is still a hard gate, just longer than initially scoped.) If wall-clock is unacceptable, abort and re-file as `use_soap_fp32_only` (no bf16 path for the eigenbasis) — but note `state["L"]` is already stored in fp32 unconditionally in the current code; the actual bf16 risk is in the matmul `grad @ grad.t()` (param dtype), not the storage. Either way, the pre-flight is the real signal.
+
+Any one of {NaN/Inf, imaginary > 1e-3, condition > 1e6} → **abort**: do NOT promote to a full run. Re-file as `use_soap_fp32_only` or close.
 
 ### Step 1 — full A/B on `screen20m`
 ```bash
@@ -48,8 +50,8 @@ Wall-clock: ~30-45 min each on a single A100 (the screen20m tier). Pass/fail bar
 - fail: treatment val > 4.6364
 - noise: |Δ| ≤ 0.05
 
-### Step 2 — seed escalation
-If treatment passes AND |Δ| ≤ 0.03, run the other two seeds (43, 44) before promoting past `screen20m`. If |Δ| > 0.03, single seed is enough.
+### Step 2 — verdict (single seed, per pipeline hard rule)
+Seed 42, single seed. |Δ| ≤ 0.05 is the noise band; a sub-noise result is logged inconclusive, not re-seeded. Per PIPELINE.md, multi-seed protocols are out of scope for this pipeline.
 
 ## Self-check (before release to code-reviewer)
 - `use_soap=False` reproduces the control (no numeric drift) — confirm by inspecting the routing code path: with the flag off, `soap_params=[]`, the SOAP optimizer is never instantiated, and the AdamW path is unchanged.

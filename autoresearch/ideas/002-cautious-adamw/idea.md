@@ -1,8 +1,8 @@
 ---
 id: 002-cautious-adamw
-status: needs-run
+status: done
 round: 3
-updated: 2026-06-08T13:55:55Z
+updated: 2026-06-09T01:02:18Z
 ---
 
 # 002 — Cautious AdamW

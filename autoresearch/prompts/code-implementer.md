@@ -78,7 +78,7 @@ stop and flag it in your output rather than forcing it.
 <params Δ, FLOPs Δ, memory Δ>
 
 ## Run
-<command, tier (tiny1m3m / Screen10M20M / ...), expected wall-clock, pass/fail bar
+<command, tier (always tiny1m3m, seed 42), expected wall-clock, pass/fail bar
 copied from idea.md>
 ```
 
