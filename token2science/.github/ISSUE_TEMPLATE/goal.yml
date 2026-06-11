@@ -1,0 +1,39 @@
+name: Goal
+description: Propose a research goal.
+labels:
+  - goal
+  - triage
+body:
+  - type: textarea
+    id: research_question
+    attributes:
+      label: research question
+    validations:
+      required: true
+  - type: input
+    id: metric_name
+    attributes:
+      label: metric name
+    validations:
+      required: true
+  - type: input
+    id: pass_bar
+    attributes:
+      label: pass-bar
+    validations:
+      required: true
+  - type: dropdown
+    id: lower_is_better
+    attributes:
+      label: lower_is_better
+      options:
+        - "true"
+        - "false"
+  - type: textarea
+    id: baseline
+    attributes:
+      label: baseline
+  - type: textarea
+    id: why_it_matters
+    attributes:
+      label: why it matters

@@ -1,0 +1,15 @@
+# G001 - Reproducible-pipeline smoke goal
+
+**Question:** does the goal -> task -> run -> verify loop work end to end on a
+machine with no GPU and no API tokens?
+
+**Metric:** `rmse` (lower is better)
+**Pass-bar:** `rmse < 1.05`
+**Baseline:** the deterministic toy experiment in `tasks/T001/experiment.py`.
+
+This goal exists to exercise the plumbing. A real goal swaps `experiment.py` for
+an actual training/eval script and sets a meaningful bar; everything else (claim,
+submit, hash check, reproduce, confirm) stays identical.
+
+## Tasks
+- `T001` - run the toy experiment at `seed=42, n=2000` and submit the rmse.

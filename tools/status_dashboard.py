@@ -9,7 +9,7 @@ Reads live from autoresearch/ideas/*/idea.md and evidence.md, and walks
 remote-results/ to find per-step val_loss series. Status vocab = PIPELINE.md.
 Run:  python3 tools/status_dashboard.py   → http://localhost:8080
 """
-import http.server, socketserver, glob, os, re, json, html, subprocess
+import http.server, socketserver, glob, os, re, json, html, subprocess, time, mimetypes
 from urllib.parse import urlparse, parse_qs
 
 PORT = int(os.environ.get("PORT", "8080"))
@@ -18,6 +18,25 @@ IDEAS = os.path.join(AUTORESEARCH, "ideas")
 BRIEF = os.path.join(AUTORESEARCH, "brief.md")
 BRIEFS = os.path.join(AUTORESEARCH, "briefs")
 REMOTE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "remote-results"))
+FLIP_SH = os.path.join(AUTORESEARCH, "bin", "flip.sh")
+QUESTIONS = os.path.join(AUTORESEARCH, "questions.jsonl")
+# token2science subproject (the "donate tokens -> reproducible science" system).
+T2S = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "token2science"))
+
+# --- GPU monitor config -----------------------------------------------------
+# Polls a Vast box over SSH to surface the running arq job + val-loss curve.
+# Override via env: SSH_HOST=user@box.example.com, SSH_PORT=22, ARQ_DIR=/root/arq
+SSH_HOST = os.environ.get("SSH_HOST", "root@81.45.65.189")
+SSH_PORT = os.environ.get("SSH_PORT", "22179")
+ARQ_DIR  = os.environ.get("ARQ_DIR",  "/root/arq")
+GPU_CACHE_TTL = 4.0  # seconds; cached across HTTP requests to avoid SSH storms
+_gpu_cache = {"ts": 0.0, "data": None}
+
+# Statuses where the user can approve/reject from the board (taste gate).
+TASTE_STATUSES = {"needs-taste", "tasting", "needs-repitch", "repitching"}
+# Approve = forward to definition gate; reject = kill the idea.
+APPROVE_TO = "needs-review"
+REJECT_TO = "rejected"
 
 # tmux sessions we never want to show as "MiniMax workers" on the board.
 AGENT_EXCLUDE = {"agent", "dash-coder"}
@@ -354,6 +373,307 @@ def read_result(slug):
         "series": series,      # [{step, val_loss}] or []
     }
 
+
+def flip_idea(slug, action):
+    """Run autoresearch/bin/flip.sh for one slug. Returns (ok, msg)."""
+    if not SLUG_RE.fullmatch(slug or ""):
+        return False, "bad slug"
+    if action not in ("approve", "reject"):
+        return False, "bad action"
+    folder = os.path.join(IDEAS, slug)
+    if not os.path.isdir(folder):
+        return False, "no such idea"
+    # Guard: only flip from a taste-gate status so this UI can't trample
+    # ideas that are mid-pipeline elsewhere.
+    cur = read_statuses().get(slug)
+    if cur not in TASTE_STATUSES:
+        return False, f"refusing: status={cur} (taste-gate only)"
+    to_status = APPROVE_TO if action == "approve" else REJECT_TO
+    note = f"{action}d via board"
+    try:
+        r = subprocess.run(
+            ["bash", FLIP_SH, slug, to_status, "dashboard", note],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, f"flip.sh error: {e}"
+    if r.returncode != 0:
+        return False, (r.stderr or r.stdout or "flip.sh failed").strip()
+    return True, (r.stdout or "ok").strip()
+
+
+# --- GPU monitor (lives in the "GPU" tab; polls box over SSH) --------------
+
+def _ssh(cmd, timeout=8):
+    """Run `cmd` on the configured box; return (rc, stdout, stderr). Never raises."""
+    try:
+        out = subprocess.run(
+            ["ssh",
+             "-p", SSH_PORT,
+             "-o", "ConnectTimeout=3",
+             "-o", "StrictHostKeyChecking=no",
+             "-o", "BatchMode=yes",
+             SSH_HOST, cmd],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return out.returncode, out.stdout, out.stderr
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return -1, "", f"ssh: {e}"
+
+
+_STEP_RE = re.compile(
+    r"step=(\d+)/(\d+),\s*loss=([\d\.Na+n]+),\s*acc=([\d\.]+),"
+    r"\s*ent=\S+,\s*cp=\S+,\s*pl=\S+,\s*lr=([\d\.eE+-]+)"
+)
+_TOKS_RE = re.compile(r"([\d\.]+)tokens/s")
+_ETA_RE  = re.compile(r"<([\d:]+),")
+_VAL_RE  = re.compile(
+    r"^Step (\d+): Val Loss: ([\d\.]+), Val Acc: ([\d\.]+), Val PPL: ([\d\.]+), LR: ([\d\.eE+-]+)$"
+)
+_FINAL_LOSS_RE = re.compile(r"^Final Val Loss:\s+([\d\.Na+n]+)\s*$")
+_FINAL_ACC_RE  = re.compile(r"^Final Val Accuracy:\s+([\d\.]+)\s*$")
+
+
+def _parse_log_text(text):
+    """Parse the tail of an arq log into (cur_step_dict, val_loss_series)."""
+    cur = None
+    series = []
+    final_loss = None
+    final_acc = None
+    for line in text.splitlines()[-2500:]:
+        m = _STEP_RE.search(line)
+        if m:
+            cur = {
+                "step": int(m.group(1)),
+                "total": int(m.group(2)),
+                "loss": m.group(3),
+                "acc": float(m.group(4)),
+                "lr": float(m.group(5)),
+            }
+        m = _TOKS_RE.search(line)
+        if m and cur is not None and "tok_s" not in cur:
+            cur["tok_s"] = float(m.group(1))
+        m = _ETA_RE.search(line)
+        if m and cur is not None and "eta" not in cur:
+            cur["eta"] = m.group(1)
+        m = _VAL_RE.match(line.strip())
+        if m:
+            series.append({
+                "step": int(m.group(1)),
+                "loss": float(m.group(2)),
+                "acc": float(m.group(3)),
+                "ppl": float(m.group(4)),
+            })
+        m = _FINAL_LOSS_RE.match(line.strip())
+        if m:
+            final_loss = m.group(1)
+        m = _FINAL_ACC_RE.match(line.strip())
+        if m:
+            final_acc = float(m.group(1))
+    if cur and final_loss is not None:
+        cur["final_loss"] = final_loss
+        cur["final_acc"] = final_acc
+    return cur, series[-50:]
+
+
+def _gather_gpu():
+    """Build the GPU-tab payload. Cached GPU_CACHE_TTL seconds per process."""
+    now = time.time()
+    if _gpu_cache["data"] and now - _gpu_cache["ts"] < GPU_CACHE_TTL:
+        return _gpu_cache["data"]
+    out = {"ts": now, "ssh_host": f"{SSH_HOST}:{SSH_PORT}"}
+
+    # 1) GPU snapshot
+    rc, txt, err = _ssh(
+        "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,"
+        "temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits"
+    )
+    if rc == 0 and txt.strip():
+        idx, name, util, mem_u, mem_t, temp, pwr, pwr_m = [
+            x.strip() for x in txt.strip().splitlines()[0].split(",")
+        ]
+        util_i, mem_u_i, mem_t_i, temp_i = int(util), int(mem_u), int(mem_t), int(temp)
+        pwr_f, pwr_m_f = float(pwr), float(pwr_m)
+        out["gpu"] = {
+            "up": True,
+            "index": int(idx),
+            "name": name,
+            "util": util_i,
+            "mem_used_mib": mem_u_i,
+            "mem_total_mib": mem_t_i,
+            "mem_pct": round(100.0 * mem_u_i / mem_t_i, 1),
+            "temp_c": temp_i,
+            "power_w": round(pwr_f, 1),
+            "power_max_w": round(pwr_m_f, 1),
+            "power_pct": round(100.0 * pwr_f / pwr_m_f, 1),
+        }
+    else:
+        out["gpu"] = {"up": False, "error": err.strip() or "no nvidia-smi"}
+
+    # 2) arq STATUS
+    rc, txt, _ = _ssh(f"cat {ARQ_DIR}/STATUS 2>/dev/null")
+    history = []
+    running = None
+    if rc == 0 and txt.strip():
+        for ln in txt.strip().splitlines():
+            parts = ln.split(None, 2)
+            if len(parts) < 3:
+                continue
+            kind, name, ts = parts
+            history.append({"state": kind, "job": name, "ts": ts})
+        if history and history[-1]["state"] == "START":
+            last = history[-1]
+            running = {"job": last["job"], "started": last["ts"], "ts": last["ts"]}
+    out["history"] = history[-30:]
+    out["running"] = running
+
+    # 3) Active log (val-loss)
+    out["current"] = None
+    out["series"] = []
+    if running:
+        rc, txt, _ = _ssh(f"cat {ARQ_DIR}/logs/{running['job']}.log 2>/dev/null | tail -2500")
+        if rc == 0 and txt:
+            cur, series = _parse_log_text(txt)
+            out["current"] = cur
+            out["series"] = series
+
+    _gpu_cache["ts"] = now
+    _gpu_cache["data"] = out
+    return out
+
+
+def _t2s_sessions():
+    """Live codex/sim tmux sessions for the token2science workflow."""
+    try:
+        out = subprocess.run(["tmux", "ls"], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        return []
+    names = []
+    for line in out.splitlines():
+        n = line.split(":", 1)[0]
+        if n.startswith("t2s-") or n.startswith("simu-"):
+            names.append(n)
+    return names
+
+
+def _gather_t2s():
+    """Read-only snapshot of the token2science testing workflow: what agents are
+    active, goal progress, recent runs, confirmations, and generated papers."""
+    data = {"ts": time.time(), "sessions": [], "goals": [], "runs": [],
+            "papers": [], "totals": {}}
+    if not os.path.isdir(T2S):
+        data["error"] = "token2science/ not found"
+        return data
+    data["sessions"] = _t2s_sessions()
+
+    # runs: scan runs/<task>/<run>/result.json, keep best value per goal + recent
+    runfiles = glob.glob(os.path.join(T2S, "runs", "*", "*", "result.json"))
+    by_goal = {}
+    for rf in runfiles:
+        try:
+            r = json.load(open(rf))
+        except Exception:
+            continue
+        by_goal.setdefault(r.get("goal_id"), []).append(r.get("value"))
+    for rf in sorted(runfiles, key=os.path.getmtime, reverse=True)[:12]:
+        try:
+            r = json.load(open(rf))
+        except Exception:
+            continue
+        data["runs"].append({"task": r.get("task_id"), "goal": r.get("goal_id"),
+                             "worker": r.get("worker"), "metric": r.get("metric"),
+                             "value": r.get("value"), "ts": os.path.getmtime(rf)})
+
+    for gj in sorted(glob.glob(os.path.join(T2S, "goals", "*", "goal.json"))):
+        try:
+            g = json.load(open(gj))
+        except Exception:
+            continue
+        gid = g.get("goal_id", os.path.basename(os.path.dirname(gj)))
+        lib = bool(g.get("lower_is_better", True))
+        bar = g.get("bar")
+        tdir = os.path.join(os.path.dirname(gj), "tasks")
+        ntasks = len(glob.glob(os.path.join(tdir, "*"))) if os.path.isdir(tdir) else 0
+        vs = [v for v in by_goal.get(gid, []) if isinstance(v, (int, float))]
+        best = (min(vs) if lib else max(vs)) if vs else None
+        beats = None
+        if best is not None and isinstance(bar, (int, float)):
+            beats = best < bar if lib else best > bar
+        data["goals"].append({"id": gid, "title": g.get("title", ""),
+                              "metric": g.get("metric", ""), "bar": bar,
+                              "lower_is_better": lib, "status": g.get("status", ""),
+                              "tasks": ntasks, "nruns": len(vs), "best": best,
+                              "beats": beats})
+
+    nconf = 0
+    for cf in glob.glob(os.path.join(T2S, "runs", "*", "confirmation.json")):
+        try:
+            if json.load(open(cf)).get("confirmed_value") is not None:
+                nconf += 1
+        except Exception:
+            pass
+    data["papers"] = [os.path.basename(p)
+                      for p in sorted(glob.glob(os.path.join(T2S, "papers", "*.md")))]
+    data["totals"] = {"goals": len(data["goals"]), "runs": len(runfiles),
+                      "papers": len(data["papers"]), "confirmed": nconf,
+                      "active_sessions": len(data["sessions"])}
+    return data
+
+_T2S_PAPER_RE = re.compile(r"\A[A-Za-z0-9._-]+\.md\Z")
+_T2S_SESSION_RE = re.compile(r"\A(?:t2s-|simu-)[A-Za-z0-9._-]+\Z")
+
+def _t2s_paper_text(name):
+    if not _T2S_PAPER_RE.fullmatch(name or ""):
+        return None
+    path = os.path.join(T2S, "papers", name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+def _t2s_asset_bytes(relpath):
+    if not relpath or os.path.isabs(relpath):
+        return None, None, 400
+    allowed_roots = [
+        os.path.realpath(os.path.join(T2S, "papers")),
+        os.path.realpath(os.path.join(T2S, "posts", "charts")),
+    ]
+    real = os.path.realpath(os.path.join(T2S, relpath))
+    ok = False
+    for root in allowed_roots:
+        prefix = root + os.sep
+        if real == root or real.startswith(prefix):
+            ok = True
+            break
+    if not ok:
+        return None, None, 400
+    if not os.path.isfile(real):
+        return None, None, 404
+    ctype = mimetypes.guess_type(real)[0] or "application/octet-stream"
+    try:
+        with open(real, "rb") as fh:
+            return fh.read(), ctype, 200
+    except OSError:
+        return None, None, 404
+
+def _t2s_session_capture(name):
+    if not _T2S_SESSION_RE.fullmatch(name or ""):
+        return None
+    try:
+        r = subprocess.run(
+            ["tmux", "capture-pane", "-t", name, "-p", "-S", "-80"],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "(session ended)"
+    if r.returncode != 0:
+        return "(session ended)"
+    return r.stdout or ""
+
+
 PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>autoresearch board</title><style>
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -452,7 +772,125 @@ svg .pt{fill:#58a6ff}
 .act-slug{color:#e6edf3;font-weight:600;white-space:nowrap;flex:0 0 auto}
 .act-trans{white-space:nowrap;flex:0 0 auto}
 .act-note{color:#6e7681;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 0;min-width:0}
+/* taste-gate approve/reject toolbar */
+.gate-tools{display:flex;gap:6px;margin:0 1px 6px}
+.gate-tools button{flex:1;background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:4px 6px;font-size:11px;font-weight:600;cursor:pointer}
+.gate-tools button:hover:not(:disabled){background:#2d333b}
+.gate-tools button:disabled{opacity:.4;cursor:not-allowed}
+.gate-tools button.appr{border-color:#238636;color:#3fb950}
+.gate-tools button.rej{border-color:#6e2c2c;color:#f85149}
+.card .ck{margin-right:6px;vertical-align:middle;accent-color:#58a6ff}
+.flash{position:fixed;right:14px;bottom:14px;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:8px 12px;font-size:12px;max-width:380px;z-index:50}
+.flash.ok{border-color:#238636;color:#3fb950}
+.flash.err{border-color:#6e2c2c;color:#f85149}
+.topbar{background:#d29922;color:#0d1117;border-radius:14px;padding:24px 28px;font-weight:700;font-size:15px;letter-spacing:.3px;flex:0 0 auto;min-height:180px;box-shadow:0 0 0 2px #f0c33a inset}
+.topbar h2{margin:0 0 14px;font-size:20px;font-weight:800;letter-spacing:.5px}
+.topbar ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,1fr);gap:8px 24px}
+.topbar li{display:flex;align-items:center;gap:10px;cursor:pointer;padding:4px 6px;border-radius:6px}
+.topbar li:hover{background:#0d111720}
+.topbar input[type=checkbox]{width:18px;height:18px;accent-color:#0d1117;cursor:pointer;flex:0 0 auto}
+.topbar label{cursor:pointer;flex:1}
+.topbar li.done label{text-decoration:line-through;opacity:.55}
+.tabs{display:flex;gap:4px;border-bottom:1px solid #30363d;flex:0 0 auto;margin-bottom:-4px}
+.tab{background:transparent;color:#8b949e;border:1px solid transparent;border-bottom:0;border-radius:8px 8px 0 0;padding:8px 16px;font:600 13px -apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer;letter-spacing:.3px}
+.tab:hover{color:#e6edf3}
+.tab.active{background:#161b22;color:#e6edf3;border-color:#30363d}
+.tab-pane{display:none;flex-direction:column;gap:12px;flex:1 1 auto;min-height:0}
+.tab-pane.active{display:flex}
+.goal{background:linear-gradient(135deg,#d29922 0%,#e6a93a 100%);color:#0d1117;border-radius:14px;padding:24px 28px;flex:0 0 auto;box-shadow:0 0 0 2px #f0c33a inset}
+.goal .tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;opacity:.75}
+.goal h1{margin:6px 0 4px;font-size:28px;font-weight:800;letter-spacing:.3px}
+.goal .sub{font-size:14px;font-weight:600;opacity:.8}
+.threads{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px 16px;flex:1 1 auto;min-height:0;overflow:auto}
+.threads h2{margin:0 0 4px;font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.threads .hint{color:#6e7681;font-size:12px;margin-bottom:14px;display:block}
+.thread{border:1px solid #30363d;border-left:4px solid #58a6ff;border-radius:8px;padding:12px 14px;margin:10px 0;background:#0d1117}
+.thread .head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.thread .num{color:#6e7681;font:700 12px ui-monospace,Menlo,monospace;flex:0 0 auto}
+.thread .name{color:#e6edf3;font-weight:700;font-size:14px;flex:1}
+.thread .st{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;border-radius:11px;padding:2px 8px;flex:0 0 auto}
+.thread .st.open{background:#1c1f24;color:#8b949e;border:1px solid #30363d}
+.thread .st.active{background:#1a3a2a;color:#3fb950;border:1px solid #3fb950}
+.thread .st.blocked{background:#3a2e00;color:#d29922;border:1px solid #d29922}
+.thread .q{color:#c9d1d9;font-size:13px;line-height:1.4;margin:0 0 6px}
+.thread .why{color:#8b949e;font-size:12px;line-height:1.4;margin:0 0 6px}
+.thread .why b{color:#d29922;font-weight:700;text-transform:uppercase;font-size:10px;letter-spacing:.4px;margin-right:6px}
+.thread .ideas{font:11px ui-monospace,Menlo,monospace;color:#6e7681;display:flex;flex-wrap:wrap;gap:6px}
+.thread .ideas span{background:#161b22;border:1px solid #30363d;border-radius:4px;padding:1px 6px;color:#8b949e}
+.thread .ideas .none{border:0;background:transparent;color:#484f58;padding:0;font-style:italic}
+/* tree visualization (vertical) */
+.tree{position:relative;background:#161b22;border:1px solid #30363d;border-radius:10px;padding:14px 16px 20px;flex:1 1 auto;min-height:0;overflow:auto}
+.tree-svg{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1}
+.tree-svg path{fill:none;stroke-width:1.6;opacity:.55}
+.tree-svg path:hover{opacity:1}
+.tree-cols{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;position:relative;z-index:2;padding-top:8px}
+.tree-anchor{grid-column:1 / -1;display:flex;justify-content:center;margin-bottom:36px}
+.tree-anchor-node{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 18px;font-size:12px;font-weight:700;color:#e6edf3;letter-spacing:.3px}
+.tree-anchor-node .arrow{color:#6e7681;margin:0 8px}
+.tree-col{display:flex;flex-direction:column;gap:6px;min-width:0}
+.tree-th{background:#0d1117;border:1px solid #30363d;border-top:3px solid var(--c,#58a6ff);border-radius:7px;padding:8px 9px;cursor:default}
+.tree-th .th-row{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.tree-th .th-num{font:700 10px ui-monospace,Menlo,monospace;color:#6e7681}
+.tree-th .th-name{font-size:11.5px;font-weight:700;color:#e6edf3;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-th .th-st{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;border-radius:9px;padding:1px 6px;flex:0 0 auto}
+.tree-th .th-st.open{background:#1c1f24;color:#8b949e;border:1px solid #30363d}
+.tree-th .th-st.active{background:#1a3a2a;color:#3fb950;border:1px solid #3fb950}
+.tree-th .th-st.blocked{background:#3a2e00;color:#d29922;border:1px solid #d29922}
+.tree-th .th-q{font-size:10.5px;color:#8b949e;line-height:1.3}
+.tree-leaves{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+.tree-leaf{background:#0d1117;border:1px solid #30363d;border-left:3px solid var(--lc,#6e7681);border-radius:5px;padding:5px 7px;font:11px ui-monospace,Menlo,monospace;color:#c9d1d9;display:flex;align-items:center;gap:6px;cursor:default;transition:background .12s}
+.tree-leaf:hover{background:#1c2129}
+.tree-leaf .leaf-slug{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-leaf .leaf-st{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--lc,#6e7681);flex:0 0 auto}
+.tree-leaves .empty{font:italic 10.5px -apple-system,sans-serif;color:#484f58;padding:4px 2px}
+.tree-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:18px;padding-top:12px;border-top:1px solid #30363d;font-size:11px;color:#8b949e}
+.tree-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+/* graph visualization (true graph: absolute nodes + SVG edges) */
+.tree-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:18px;padding-top:12px;border-top:1px solid #30363d;font-size:11px;color:#8b949e}
+.tree-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.graph{position:relative;width:100%;min-height:520px;height:calc(70vh - 100px);margin-top:8px}
+.pill{position:absolute;display:flex;align-items:center;gap:6px;border-radius:14px;font:600 11px -apple-system,BlinkMacSystemFont,sans-serif;white-space:nowrap;user-select:none;cursor:default;transition:filter .12s, transform .12s;z-index:2}
+.pill:hover{filter:brightness(1.25);transform:translateY(-1px);z-index:3}
+.pill .badge{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;opacity:.85}
+.goal-pill{top:14px;background:linear-gradient(135deg,#21262d 0%,#1c2129 100%);border:1.5px solid #58a6ff;color:#e6edf7;padding:9px 18px;font-size:13px;box-shadow:0 0 0 1px #58a6ff40,0 0 14px #58a6ff30;border-radius:18px;font-weight:700;z-index:4}
+.goal-pill .goal-arrow{margin:0 6px;color:#6e7681;font-weight:400}
+.thread-pill{background:#161b22;border:1.5px solid var(--c,#58a6ff);color:#e6edf3;padding:5px 10px;border-radius:14px;box-shadow:0 0 0 1px var(--c,#58a6ff)20}
+.thread-pill .num{color:var(--c,#58a6ff);font:700 10px ui-monospace,Menlo,monospace;margin-right:4px}
+.thread-pill .st{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;border-radius:8px;padding:1px 5px;margin-left:4px}
+.thread-pill .st.open{background:#1c1f24;color:#8b949e}
+.thread-pill .st.active{background:#1a3a2a;color:#3fb950}
+.thread-pill .st.blocked{background:#3a2e00;color:#d29922}
+.idea-pill{background:#0d1117;border:1px solid #30363d;border-left:3px solid var(--lc,#6e7681);color:#c9d1d9;padding:3px 8px;border-radius:11px;font:500 10.5px ui-monospace,Menlo,monospace;letter-spacing:.2px}
+.idea-pill .leaf-st{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--lc,#6e7681);margin-left:4px}
+.ghost-pill{background:transparent;border:1px dashed #484f58;color:#6e7681;padding:3px 8px;border-radius:11px;font:italic 10.5px -apple-system,sans-serif}
 </style></head><body>
+<div class=tabs>
+  <button class=tab data-tab=board>Board</button>
+  <button class=tab data-tab=brainstorm>Brainstorm</button>
+  <button class=tab data-tab=gpu>GPU</button>
+  <button class=tab data-tab=testing>Testing</button>
+</div>
+<div class="tab-pane" id=pane-brainstorm>
+<div class=goal>
+  <div class=tag>main goal · 2026</div>
+  <h1>Ship a 135M LLM that beats SmolLM-135M</h1>
+  <div class=sub>target: HellaSwag · PIQA · ARC-easy · MMLU-tiny, FLOPs-matched</div>
+</div>
+<div class=tree id=tree>
+  <div class=graph id=graph>
+    <svg class=tree-svg id=tree-svg></svg>
+    <div id=graph-nodes></div>
+  </div>
+  <div class=tree-legend>
+    <span><i style="background:#3fb950"></i>done</span>
+    <span><i style="background:#58a6ff"></i>running</span>
+    <span><i style="background:#2f81f7"></i>needs-run</span>
+    <span><i style="background:#d29922"></i>needs-*</span>
+    <span><i style="background:#6e7681"></i>rejected</span>
+  </div>
+</div>
+</div>
+<div class="tab-pane" id=pane-board>
 <h1>autoresearch board <small id=meta>loading…</small></h1>
 <div class=campaigns id=campaigns>
   <h2>Campaigns</h2>
@@ -469,11 +907,195 @@ svg .pt{fill:#58a6ff}
 <div class=workers id=workers><h2><span>MiniMax workers</span><span class=ct id=workers-ct>0</span></h2><div class=row id=workers-row><div class=none>loading…</div></div></div>
 <div class=board id=board></div>
 <div class=reader id=reader><span class=hint>Click an idea above to read its idea.md here.</span></div>
+</div>
+<div class="tab-pane" id=pane-testing>
+<style scoped>
+  #pane-testing h1{margin:0;font-size:15px;font-weight:600}
+  #pane-testing h1 small{color:#6e7681;font-weight:400;margin-left:8px;font-size:11px;font-family:ui-monospace,Menlo,monospace}
+  .t2s-totals{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .t2s-chip{background:#161b22;border:1px solid #30363d;border-radius:20px;padding:4px 12px;font-size:12px;color:#e6edf3}
+  .t2s-chip b{color:#58a6ff}
+  .t2s-grid{display:flex;gap:10px;flex-wrap:wrap}
+  .t2s-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;flex:1 1 320px;min-width:0;margin-bottom:10px}
+  .t2s-card h2{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e;font-weight:600}
+  .t2s-sess{font:600 12.5px ui-monospace,Menlo,monospace;color:#3fb950;padding:3px 0;display:flex;align-items:center;gap:7px}
+  .t2s-live{width:8px;height:8px;border-radius:50%;background:#3fb950;box-shadow:0 0 6px #3fb95080;flex:0 0 auto;animation:t2spulse 1.4s infinite}
+  @keyframes t2spulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .t2s-goal{padding:5px 0;border-bottom:1px solid #1c2129;font-size:12.5px}
+  .t2s-goal:last-child{border-bottom:0}
+  .t2s-goal b{color:#e6edf3}
+  .t2s-mut{color:#6e7681}
+  .t2s-ok{color:#3fb950;font-weight:600}
+  .t2s-below{color:#d29922}
+  .t2s-run{font:11.5px ui-monospace,Menlo,monospace;color:#8b949e;padding:2px 0}
+  .t2s-run code{color:#58a6ff}
+  .t2s-paper{font-size:12.5px;color:#e6edf3;padding:2px 0}
+  .t2s-paper-link,.t2s-sess-link{display:flex;align-items:center;gap:7px;width:100%;padding:3px 0;text-decoration:none;background:transparent;border:0;cursor:pointer;text-align:left}
+  .t2s-paper-link{font-size:12.5px;color:#e6edf3}
+  .t2s-sess-link{font:600 12.5px ui-monospace,Menlo,monospace;color:#3fb950}
+  .t2s-paper-link:hover,.t2s-sess-link:hover{color:#58a6ff}
+  .t2s-paper-link.active,.t2s-sess-link.active{color:#58a6ff}
+  .t2s-paper-link .name,.t2s-sess-link .name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .t2s-reader{margin-top:10px;border-top:1px solid #30363d;padding-top:10px}
+  .t2s-reader h3{margin:0 0 8px;font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+  .t2s-reader .body{max-height:42vh;overflow:auto;padding-right:2px}
+  .t2s-livewrap{display:flex;flex-direction:column;gap:8px}
+  .t2s-livebar{display:flex;align-items:center;gap:8px;justify-content:space-between}
+  .t2s-livebar .label{color:#8b949e;font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .t2s-livebar button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer}
+  .t2s-livebar button:hover:not(:disabled){background:#2d333b}
+  .t2s-livebar button:disabled{opacity:.45;cursor:not-allowed}
+  .t2s-session-box{background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:10px 12px;min-height:220px;max-height:46vh;overflow:auto;font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#c9d1d9;white-space:pre-wrap;word-break:break-word;margin:0}
+  .t2s-session-box .hint{display:block}
+  #pane-testing .hint{color:#6e7681;font-size:12px}
+  .md table{width:100%;border-collapse:collapse;margin:0 0 10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;overflow:hidden;display:block}
+  .md thead{background:#161b22}
+  .md th,.md td{border-bottom:1px solid #30363d;border-right:1px solid #30363d;padding:6px 8px;vertical-align:top;text-align:left}
+  .md th:last-child,.md td:last-child{border-right:0}
+  .md tr:last-child td{border-bottom:0}
+  .md img{max-width:100%;height:auto;display:block;margin:8px 0;border:1px solid #30363d;border-radius:6px;background:#0d1117}
+</style>
+<h1>token2science testing <small id=t2s-meta>loading…</small></h1>
+<div class=t2s-totals id=t2s-totals></div>
+<div class=t2s-grid>
+  <div class=t2s-card><h2>Active agents</h2><div id=t2s-sessions><span class=hint>…</span></div></div>
+  <div class=t2s-card><h2>Goals</h2><div id=t2s-goals><span class=hint>…</span></div></div>
+</div>
+<div class=t2s-card><h2>Recent runs</h2><div id=t2s-runs><span class=hint>…</span></div></div>
+<div class=t2s-card><h2>Papers</h2><div id=t2s-papers><span class=hint>…</span></div><div class=t2s-reader id=t2s-paper-view><span class=hint>click a paper to render it here</span></div></div>
+<div class=t2s-card><h2>Live session</h2><div class=t2s-livewrap><div class=t2s-livebar><span class=label id=t2s-session-label>click an agent session to follow it live</span><button id=t2s-session-stop disabled>Stop/close</button></div><pre class=t2s-session-box id=t2s-session-view><span class=hint>no session selected</span></pre></div></div>
+</div>
+<div class="tab-pane" id=pane-gpu>
+<style scoped>
+  .gpuwrap{display:flex;flex-direction:column;gap:10px;flex:1 1 auto;min-height:0}
+  .gputop{display:flex;align-items:baseline;gap:14px;flex:0 0 auto}
+  .gputop h1{margin:0;font-size:15px;font-weight:600}
+  .gputop h1 small{color:#8b949e;font-weight:400;margin-left:6px}
+  .gputop .dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:#6e7681;vertical-align:middle;margin-right:4px}
+  .gputop .dot.ok{background:#3fb950;box-shadow:0 0 6px #3fb95080}
+  .gputop .dot.stale{background:#d29922}
+  .gputop .dot.down{background:#f85149}
+  .gputop .ts{color:#6e7681;font-size:11px;margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .gpurow{display:flex;gap:10px;flex:0 0 auto}
+  .gpurow.grow{flex:1 1 auto;min-height:0}
+  .gpucard{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px 14px;flex:1 1 0;min-width:0;display:flex;flex-direction:column;min-height:0}
+  .gpucard h2{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8b949e;font-weight:600}
+  .gpumetric{font:600 24px ui-monospace,SFMono-Regular,Menlo,monospace;color:#e6edf3;line-height:1}
+  .gpumetric small{font-size:11px;color:#8b949e;font-weight:400;margin-left:4px}
+  .gpubar{position:relative;height:5px;background:#21262d;border-radius:3px;margin-top:8px;overflow:hidden}
+  .gpubar > i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#3fb950 0%,#58a6ff 60%,#d29922 90%);border-radius:3px;transition:width .5s}
+  .gpusub{color:#6e7681;font-size:11px;margin-top:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .gpujob{font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace;color:#58a6ff}
+  .gpujob .pill{display:inline-block;background:#21262d;color:#3fb950;padding:1px 7px;border-radius:9px;font-size:10px;margin-left:6px;text-transform:uppercase;letter-spacing:.4px;font-weight:600}
+  .gpujob .pill.idle{background:#21262d;color:#6e7681}
+  .gpujob .pill.done{background:#21262d;color:#d29922}
+  .gpukv{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px 14px;margin-top:10px}
+  .gpukv div{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:#8b949e}
+  .gpukv div b{color:#e6edf3;font-weight:600}
+  .gpukv div.bad b{color:#f85149}
+  .gpuchart{flex:1 1 auto;width:100%;min-height:0}
+  .gpuchart .ax{stroke:#30363d;stroke-width:1}
+  .gpuchart .ln{fill:none;stroke:#58a6ff;stroke-width:1.6}
+  .gpuchart .pt{fill:#58a6ff;stroke:#0d1117;stroke-width:1}
+  .gpuchart .gl{stroke:#21262d;stroke-dasharray:2 3}
+  .gpuchart .lb{font:9.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#8b949e}
+  .gpuqtable{width:100%;border-collapse:collapse;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;flex:1 1 auto;display:block;overflow:auto}
+  .gpuqtable thead{position:sticky;top:0;background:#161b22}
+  .gpuqtable th{color:#8b949e;text-align:left;font-weight:600;padding:4px 8px;border-bottom:1px solid #30363d;font-size:10px;text-transform:uppercase;letter-spacing:.4px}
+  .gpuqtable td{padding:3px 8px;border-bottom:1px solid #1c2129}
+  .gpuqtable tr.START td{color:#58a6ff}
+  .gpuqtable tr.OK td{color:#3fb950}
+  .gpuqtable tr.FAIL td{color:#f85149}
+  .gpuqtable tr.QUEUE_DONE td{color:#d29922}
+  .gpuhint{color:#6e7681}
+</style>
+<div class=gpuwrap>
+  <div class=gputop>
+    <h1>GPU monitor <small id=gpu-host></small></h1>
+    <span><span class=dot id=gpu-dot></span> <span id=gpu-st>connecting…</span></span>
+    <span class=ts id=gpu-ts>—</span>
+  </div>
+  <div class=gpurow>
+    <div class=gpucard style="flex:0 0 24%">
+      <h2>GPU util</h2>
+      <div class=gpumetric id=gpu-util>—<small>%</small></div>
+      <div class=gpubar><i id=gpu-utilb style="width:0%"></i></div>
+      <div class=gpusub id=gpu-utilsub>—</div>
+    </div>
+    <div class=gpucard style="flex:0 0 24%">
+      <h2>Memory</h2>
+      <div class=gpumetric id=gpu-mem>—<small>GiB</small></div>
+      <div class=gpubar><i id=gpu-memb style="width:0%"></i></div>
+      <div class=gpusub id=gpu-memsub>—</div>
+    </div>
+    <div class=gpucard style="flex:0 0 24%">
+      <h2>Temp / power</h2>
+      <div class=gpumetric id=gpu-temp>—<small>°C</small></div>
+      <div class=gpubar><i id=gpu-tempb style="width:0%"></i></div>
+      <div class=gpusub id=gpu-pwr>—</div>
+    </div>
+    <div class=gpucard style="flex:1 1 auto">
+      <h2>Current job</h2>
+      <div class=gpujob id=gpu-jname>idle <span class="pill idle" id=gpu-jstatus>—</span></div>
+      <div class=gpukv>
+        <div>step: <b id=gpu-jstep>—</b></div>
+        <div>tok/s: <b id=gpu-jtoks>—</b></div>
+        <div>loss: <b id=gpu-jloss>—</b></div>
+        <div>acc: <b id=gpu-jacc>—</b></div>
+        <div>lr: <b id=gpu-jlr>—</b></div>
+        <div>eta: <b id=gpu-jeta>—</b></div>
+      </div>
+    </div>
+  </div>
+  <div class="gpurow grow">
+    <div class=gpucard style="flex:1 1 60%">
+      <h2>Val loss (live)</h2>
+      <svg class=gpuchart id=gpu-chart preserveAspectRatio="none"></svg>
+      <div class=gpusub id=gpu-chartsub>—</div>
+    </div>
+    <div class=gpucard style="flex:0 0 38%">
+      <h2>arq queue</h2>
+      <table class=gpuqtable id=gpu-qtab>
+        <thead><tr><th>state</th><th>job</th><th>ts</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</div>
 <script>
 const GROUPS = __GROUPS__;
+const TASTE_STATUSES = __TASTE__;   // statuses where checkboxes appear
 let sel = null;
 let lastBoardJson = '';
 let lastBriefText = '';
+const picked = new Set();            // slugs currently checked (taste gate)
+function isTasteGroup(g){ return g.members.some(m => TASTE_STATUSES.includes(m)); }
+function flash(msg, ok){
+  const el = document.createElement('div');
+  el.className = 'flash ' + (ok?'ok':'err');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4500);
+}
+async function bulkFlip(action){
+  if(!picked.size) return;
+  const slugs = [...picked];
+  const r = await fetch('api/flip', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({slugs, action}),
+  });
+  let data = null;
+  try { data = await r.json(); } catch(e) {}
+  if(!data){ flash('flip failed (no response)', false); return; }
+  const okN = data.results.filter(x => x.ok).length;
+  const errs = data.results.filter(x => !x.ok);
+  flash(`${action}: ${okN}/${slugs.length} ok` + (errs.length?` · err: ${errs.map(e=>e.slug+': '+e.msg).join('; ')}`:''), errs.length===0);
+  picked.clear();
+  lastBoardJson = '';   // force re-render
+  load();
+}
 function toggleBrief(){
   document.getElementById('brief').classList.toggle('collapsed');
 }
@@ -507,16 +1129,53 @@ async function load(){
     col.innerHTML = `<h2><span class=nm style="color:${g.color}">${g.label}</span>`+
       `<span class=ct style="background:${g.color}">${mine.length}</span></h2>`+
       `<div class=desc>${g.desc}</div>`;
+    if(isTasteGroup(g)){
+      const tools = document.createElement('div'); tools.className='gate-tools';
+      tools.innerHTML = `<button class=appr id=appr-btn disabled>✓ Approve (<span id=appr-n>0</span>)</button>`+
+                       `<button class=rej  id=rej-btn  disabled>✗ Reject (<span id=rej-n>0</span>)</button>`;
+      col.appendChild(tools);
+      tools.querySelector('#appr-btn').onclick = () => bulkFlip('approve');
+      tools.querySelector('#rej-btn').onclick  = () => bulkFlip('reject');
+    }
     if(!mine.length) col.insertAdjacentHTML('beforeend','<div class=none>—</div>');
     for(const [slug,st] of mine){
       const d=document.createElement('div'); d.className='card'+(slug===sel?' sel':'');
       d.style.borderLeftColor=g.color;
-      d.innerHTML=`${slug}<span class=sub>${st}</span>`;
-      d.onclick=()=>show(slug);
+      if(isTasteGroup(g)){
+        const checked = picked.has(slug) ? ' checked' : '';
+        d.innerHTML=`<input type=checkbox class=ck data-slug="${slug}"${checked}>${slug}<span class=sub>${st}</span>`;
+      } else {
+        d.innerHTML=`${slug}<span class=sub>${st}</span>`;
+      }
+      d.dataset.slug = slug;
+      d.onclick=(e)=>{
+        if(e.target.classList.contains('ck')) return;   // checkbox handles itself
+        show(slug);
+      };
+      const cb = d.querySelector('.ck');
+      if(cb){
+        cb.onclick = (e) => { e.stopPropagation(); };
+        cb.onchange = (e) => {
+          if(e.target.checked) picked.add(slug); else picked.delete(slug);
+          updateGateButtons();
+        };
+      }
       col.appendChild(d);
     }
     board.appendChild(col);
   }
+  // Drop picks that no longer exist or have left the taste gate.
+  for(const s of [...picked]){
+    if(!(s in byStatus) || !TASTE_STATUSES.includes(byStatus[s])) picked.delete(s);
+  }
+  updateGateButtons();
+}
+function updateGateButtons(){
+  const n = picked.size;
+  const a = document.getElementById('appr-btn'), r = document.getElementById('rej-btn');
+  const an = document.getElementById('appr-n'), rn = document.getElementById('rej-n');
+  if(a){ a.disabled = !n; an.textContent = n; }
+  if(r){ r.disabled = !n; rn.textContent = n; }
 }
 function fmt(v){ if(v==null) return '—'; return Number(v).toFixed(4); }
 function deltaClass(d){ if(d==null) return ''; return d<0?' d':(d>0?' d bad':''); }
@@ -581,14 +1240,44 @@ function renderChart(series){
 function mdEsc(s){
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function mdIsExternalUrl(u){
+  return /^(?:https?:\/\/|\/|#|\/\/)/i.test(u);
+}
 function mdSafeUrl(u){
   // Only allow http(s), relative, or in-page URLs. Reject javascript:, data:, etc.
-  return /^(https?:\/|\/|#)/i.test(u) ? u : '#';
+  return mdIsExternalUrl(u) ? u : '#';
 }
-function mdInline(s){
+function t2sResolveAssetPath(src){
+  const raw = String(src || '').trim();
+  if(!raw) return null;
+  if(mdIsExternalUrl(raw)) return raw;
+  const m = raw.match(/^([^?#]*)([?#].*)?$/);
+  const rel = m ? m[1] : raw;
+  const tail = m && m[2] ? m[2] : '';
+  const parts = ['papers'];
+  for(const seg of rel.split('/')){
+    if(!seg || seg === '.') continue;
+    if(seg === '..'){
+      if(!parts.length) return null;
+      parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  const path = parts.join('/');
+  if(!(path === 'papers' || path.startsWith('papers/') || path === 'posts/charts' || path.startsWith('posts/charts/'))) return null;
+  return '/api/t2s/asset?path=' + encodeURIComponent(path) + tail;
+}
+function mdInline(s, opts){
   // Stash inline code behind placeholders so the asterisks inside are safe.
   const codes = [];
   s = s.replace(/`([^`\n]+)`/g, (m, c) => { codes.push(c); return '\x00C' + (codes.length-1) + '\x00'; });
+  // images: ![alt](src)
+  s = s.replace(/!\[([^\]\n]*)\]\(([^)\s]+)\)/g, (m, alt, u) => {
+    const src = (opts && opts.paperAsset) ? t2sResolveAssetPath(u) : null;
+    const finalSrc = src || mdSafeUrl(u);
+    return '<img alt="' + alt + '" src="' + finalSrc + '">';
+  });
   // links: [text](url)
   s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (m, t, u) =>
     '<a href="' + mdSafeUrl(u) + '" target="_blank" rel="noopener noreferrer">' + t + '</a>');
@@ -600,7 +1289,13 @@ function mdInline(s){
   s = s.replace(/\x00C(\d+)\x00/g, (m, i) => '<code>' + codes[+i] + '</code>');
   return s;
 }
-function renderMarkdown(src){
+function mdTableSep(line){
+  return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
+}
+function mdTableCells(line){
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+}
+function renderMarkdown(src, opts){
   if(src == null) return '';
   // 1) Escape HTML FIRST so user content can never inject tags.
   const text = mdEsc(String(src));
@@ -618,6 +1313,47 @@ function renderMarkdown(src){
       out.push('<pre><code>' + buf.join('\n') + '</code></pre>');
       continue;
     }
+    // GFM table: header row + separator row + body rows.
+    if (i + 1 < lines.length && line.includes('|') && mdTableSep(lines[i + 1])){
+      const head = mdTableCells(line);
+      const aligns = mdTableCells(lines[i + 1]).map(cell => {
+        const left = /^:/.test(cell);
+        const right = /:$/.test(cell);
+        if(left && right) return 'center';
+        if(right) return 'right';
+        if(left) return 'left';
+        return '';
+      });
+      const rows = [];
+      i += 2;
+      while (i < lines.length
+          && lines[i].trim() !== ''
+          && lines[i].includes('|')
+          && !/^```/.test(lines[i])
+          && !/^#{1,6}\s+/.test(lines[i])
+          && !/^[-*]\s+/.test(lines[i])
+          && !/^\d+\.\s+/.test(lines[i])){
+        rows.push(mdTableCells(lines[i]));
+        i++;
+      }
+      let html = '<table><thead><tr>';
+      for(let j = 0; j < head.length; j++){
+        const st = aligns[j] ? ' style="text-align:' + aligns[j] + '"' : '';
+        html += '<th' + st + '>' + mdInline(head[j], opts) + '</th>';
+      }
+      html += '</tr></thead><tbody>';
+      for(const row of rows){
+        html += '<tr>';
+        for(let j = 0; j < head.length; j++){
+          const st = aligns[j] ? ' style="text-align:' + aligns[j] + '"' : '';
+          html += '<td' + st + '>' + mdInline(row[j] || '', opts) + '</td>';
+        }
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      out.push(html);
+      continue;
+    }
     // Horizontal rule
     if (/^---+\s*$/.test(line) || /^\*\*\*+\s*$/.test(line)){
       out.push('<hr>');
@@ -628,7 +1364,7 @@ function renderMarkdown(src){
     const hm = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
     if (hm){
       const lvl = hm[1].length;
-      out.push('<h' + lvl + '>' + mdInline(hm[2]) + '</h' + lvl + '>');
+      out.push('<h' + lvl + '>' + mdInline(hm[2], opts) + '</h' + lvl + '>');
       i++;
       continue;
     }
@@ -638,20 +1374,20 @@ function renderMarkdown(src){
     if (/^[-*]\s+/.test(line)){
       const items = [];
       while (i < lines.length && /^[-*]\s+/.test(lines[i])){
-        items.push(mdInline(lines[i].replace(/^[-*]\s+/, '')));
+        items.push('<li>' + mdInline(lines[i].replace(/^[-*]\s+/, ''), opts) + '</li>');
         i++;
       }
-      out.push('<ul><li>' + items.join('</li><li>') + '</li></ul>');
+      out.push('<ul>' + items.join('') + '</ul>');
       continue;
     }
     // Numbered list
     if (/^\d+\.\s+/.test(line)){
       const items = [];
       while (i < lines.length && /^\d+\.\s+/.test(lines[i])){
-        items.push(mdInline(lines[i].replace(/^\d+\.\s+/, '')));
+        items.push('<li>' + mdInline(lines[i].replace(/^\d+\.\s+/, ''), opts) + '</li>');
         i++;
       }
-      out.push('<ol><li>' + items.join('</li><li>') + '</li></ol>');
+      out.push('<ol>' + items.join('') + '</ol>');
       continue;
     }
     // Paragraph: consume consecutive plain lines until blank/special.
@@ -662,20 +1398,21 @@ function renderMarkdown(src){
         && !/^#{1,6}\s+/.test(lines[i])
         && !/^[-*]\s+/.test(lines[i])
         && !/^\d+\.\s+/.test(lines[i])
+        && !(i + 1 < lines.length && lines[i].includes('|') && mdTableSep(lines[i + 1]))
         && !/^---+\s*$/.test(lines[i])
         && !/^\*\*\*+\s*$/.test(lines[i])){
       buf.push(lines[i]); i++;
     }
     const joined = buf.join('\n');
     // Single-line paragraph: just inline. Multi-line: keep line breaks as <br>.
-    if (buf.length === 1) out.push('<p>' + mdInline(joined) + '</p>');
-    else out.push('<p>' + mdInline(joined).replace(/\n/g, '<br>') + '</p>');
+    if (buf.length === 1) out.push('<p>' + mdInline(joined, opts) + '</p>');
+    else out.push('<p>' + mdInline(joined, opts).replace(/\n/g, '<br>') + '</p>');
   }
   return out.join('\n');
 }
 async function show(slug){
   sel=slug;
-  document.querySelectorAll('.card').forEach(c=>c.classList.toggle('sel', c.firstChild.textContent===slug));
+  document.querySelectorAll('.card').forEach(c=>c.classList.toggle('sel', c.dataset.slug===slug));
   const reader=document.getElementById('reader');
   // 1) idea.md (existing behavior)
   const r=await fetch('api/idea?slug='+encodeURIComponent(slug));
@@ -830,10 +1567,514 @@ async function loadActivity(){
   body.innerHTML = rows;
 }
 load(); loadAgents(); loadBrief(); loadCampaigns(); loadActivity();
+// graph visualization: 1 goal -> 7 threads -> 16 ideas, absolute-positioned nodes + SVG bezier edges
+(function(){
+  const THREADS = [
+    {id:'T1', name:'Optimizer', status:'active', color:'#a371f7',
+     ideas:[
+       {slug:'001-cautious-muon', st:'done'},
+       {slug:'005-decoupled-qkv-muon', st:'done'},
+       {slug:'015-moonlight-muon-rms', st:'done'},
+       {slug:'011-cautious-lion', st:'done'},
+     ]},
+    {id:'T2', name:'Attention', status:'active', color:'#58a6ff',
+     ideas:[
+       {slug:'020-forgetting-attn', st:'needs-run'},
+       {slug:'021-value-residual', st:'needs-run'},
+       {slug:'022-softpick-attn', st:'needs-run'},
+       {slug:'023-canon-conv', st:'needs-run'},
+       {slug:'024-gated-attn', st:'needs-run'},
+       {slug:'025-scalable-softmax', st:'needs-run'},
+     ]},
+    {id:'T3', name:'Norm', status:'open', color:'#3fb950',
+     ideas:[
+       {slug:'016-qk-norm', st:'done'},
+       {slug:'017-sub-ln-sandwich', st:'done'},
+     ]},
+    {id:'T4', name:'Positional', status:'open', color:'#f0883e',
+     ideas:[
+       {slug:'009-fire-pe', st:'done'},
+       {slug:'013-cope', st:'done'},
+     ]},
+    {id:'T5', name:'Scaling-law', status:'blocked', color:'#d29922', ideas:[]},
+    {id:'T6', name:'Data', status:'blocked', color:'#f85149', ideas:[]},
+    {id:'T7', name:'Eval', status:'open', color:'#6e7681', ideas:[]},
+  ];
+  const ST_COLOR = {
+    'done':'#3fb950', 'running':'#58a6ff', 'needs-run':'#2f81f7',
+    'rejected':'#6e7681',
+  };
+  function statusColor(st){
+    if(ST_COLOR[st]) return ST_COLOR[st];
+    if(st && /^needs-/.test(st)) return '#d29922';
+    if(st && /ing$/.test(st)) return '#d29922';
+    return '#6e7681';
+  }
+  // estimate pill width from text length (since pills are absolutely positioned, no flex auto-size)
+  function pillW(kind, text){
+    // goal ~ 13px, thread ~ 11px, idea ~ 10.5px monospace; 12px padding + 4px border each side + 6px badge gap
+    if(kind === 'goal')   return 26 + text.length * 8.2;
+    if(kind === 'thread') return 22 + text.length * 7.0 + 30;   // +30 for T# + status badge
+    if(kind === 'idea')   return 18 + text.length * 6.4 + 28;   // +28 for status badge
+    if(kind === 'ghost')  return 18 + text.length * 6.0;
+    return 60;
+  }
+  const H_GOAL = 36, H_THREAD = 26, H_IDEA = 20, H_GHOST = 20;
+  const Y_GOAL = 14, Y_THREAD = 110, Y_IDEA = 200;
+  const G_IDEA_Y = 4;    // vertical gap between idea rows
+  const IDEA_W_FIXED = 168;  // idea pills: fixed width so columns line up
+  const COL_GAP = 6;
+
+  function build(){
+    const tree = document.getElementById('tree');
+    const graph = document.getElementById('graph');
+    const svg = document.getElementById('tree-svg');
+    const nodesEl = document.getElementById('graph-nodes');
+    if(!tree || !graph || !svg || !nodesEl) return;
+    nodesEl.innerHTML = '';
+
+    // measure container
+    const W = graph.clientWidth || tree.clientWidth;
+    const H = graph.clientHeight || 520;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('width', W);
+    svg.setAttribute('height', H);
+
+    // ----- GOAL (centered at top) -----
+    const goalText = '🎯 Ship a 135M LLM that beats SmolLM-135M';
+    const goalW = Math.min(pillW('goal', goalText), W - 40);
+    const goalX = (W - goalW) / 2;
+    const goalY = Y_GOAL;
+    const goal = pill('goal-pill', goalText, goalX, goalY, goalW, H_GOAL);
+    nodesEl.appendChild(goal);
+
+    // ----- THREADS (7 across the width) -----
+    const PAD = 30;
+    const slotW = (W - 2 * PAD) / THREADS.length;
+    // each thread pill: width determined by name; horizontal centering within slot
+    const threadNodes = THREADS.map(t => {
+      const text = `${t.id} ${t.name} · ${t.status}`;
+      const w = pillW('thread', text);
+      const x = PAD + THREADS.indexOf(t) * slotW + (slotW - w) / 2;
+      const y = Y_THREAD;
+      const node = pill('pill thread-pill', text, x, y, w, H_THREAD);
+      node.style.setProperty('--c', t.color);
+      nodesEl.appendChild(node);
+      return {t, x, y, w, h:H_THREAD, cx: x + w/2, top: y, bottom: y + H_THREAD};
+    });
+
+    // ----- IDEAS (2 columns per thread, centered under each thread cx) -----
+    const ideaNodes = [];
+    for(const tn of threadNodes){
+      const t = tn.t;
+      if(t.ideas.length === 0){
+        const gw = 110, gh = H_GHOST;
+        const x = tn.cx - gw/2;
+        const y = Y_IDEA;
+        const g = pill('pill ghost-pill', '+ propose idea', x, y, gw, gh);
+        nodesEl.appendChild(g);
+        continue;
+      }
+      const n = t.ideas.length;
+      const rows = Math.ceil(n / 2);
+      const clusterW = 2 * IDEA_W_FIXED + COL_GAP;
+      const x0 = tn.cx - clusterW / 2;
+      t.ideas.forEach((i, k) => {
+        const col = k % 2;
+        const row = Math.floor(k / 2);
+        const x = x0 + col * (IDEA_W_FIXED + COL_GAP);
+        const y = Y_IDEA + row * (H_IDEA + G_IDEA_Y);
+        const lc = statusColor(i.st);
+        const p = document.createElement('div');
+        p.className = 'pill idea-pill';
+        p.style.left = x + 'px'; p.style.top = y + 'px';
+        p.style.width = IDEA_W_FIXED + 'px'; p.style.height = H_IDEA + 'px';
+        p.style.setProperty('--lc', lc);
+        p.innerHTML = `<span>${i.slug}</span><span class=leaf-st>${i.st}</span>`;
+        nodesEl.appendChild(p);
+        ideaNodes.push({t, x, y, w: IDEA_W_FIXED, h: H_IDEA, cx: x + IDEA_W_FIXED/2, top: y, bottom: y + H_IDEA, i});
+      });
+    }
+
+    // ----- EDGES (cubic bezier paths) -----
+    const goalBottomY = goalY + H_GOAL;
+    const threadTopY  = Y_THREAD;
+    let paths = '';
+    // goal -> thread
+    for(const tn of threadNodes){
+      const gx = goalX + goalW / 2;
+      const gy = goalBottomY;
+      const tx = tn.cx;
+      const ty = tn.top;
+      const midY = gy + (ty - gy) * 0.55;
+      paths += `<path d="M ${gx} ${gy} C ${gx} ${midY}, ${tx} ${midY}, ${tx} ${ty}" stroke="${tn.t.color}" />`;
+    }
+    // thread -> idea (one curve per idea)
+    for(const idea of ideaNodes){
+      const tn = threadNodes.find(x => x.t.id === idea.t.id);
+      if(!tn) continue;
+      const tx = tn.cx;
+      const ty = tn.bottom;
+      const ix = idea.cx;
+      const iy = idea.top;
+      const midY = ty + (iy - ty) * 0.5;
+      paths += `<path d="M ${tx} ${ty} C ${tx} ${midY}, ${ix} ${midY}, ${ix} ${iy}" stroke="${tn.t.color}" />`;
+    }
+    svg.innerHTML = paths;
+  }
+
+  function pill(cls, text, x, y, w, h){
+    const p = document.createElement('div');
+    p.className = cls;
+    p.style.left = x + 'px';
+    p.style.top  = y + 'px';
+    p.style.width  = w + 'px';
+    p.style.height = h + 'px';
+    p.style.justifyContent = 'center';
+    p.textContent = text;
+    return p;
+  }
+
+  let resizeT;
+  function reflow(){ clearTimeout(resizeT); resizeT = setTimeout(build, 60); }
+  build();
+  window.addEventListener('resize', reflow);
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    if(t.dataset.tab === 'brainstorm') setTimeout(build, 30);
+  }));
+  // observe container size changes (e.g. window resize on tab switch)
+  if(window.ResizeObserver){
+    const ro = new ResizeObserver(reflow);
+    const tree = document.getElementById('tree');
+    if(tree) ro.observe(tree);
+  }
+})();
+// tabs: switch between Board and Brainstorm, persist active tab
+(function(){
+  const TAB_KEY = 'autoresearch-tab';
+  const tabs = document.querySelectorAll('.tab');
+  const panes = document.querySelectorAll('.tab-pane');
+  function activate(name){
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    panes.forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
+    try { localStorage.setItem(TAB_KEY, name); } catch(e) {}
+  }
+  tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.tab)));
+  let initial = 'board';
+  try { initial = localStorage.getItem(TAB_KEY) || 'board'; } catch(e) {}
+  activate(initial);
+})();
+// topbar checklist: persist checks in localStorage, strike on check
+(function(){
+  const list = document.getElementById('topbar-list');
+  if(!list) return;
+  const KEY = 'autoresearch-checklist';
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e) { saved = {}; }
+  for(const cb of list.querySelectorAll('input[type=checkbox]')){
+    if(saved[cb.id]) { cb.checked = true; cb.closest('li').classList.add('done'); }
+    cb.addEventListener('change', () => {
+      cb.closest('li').classList.toggle('done', cb.checked);
+      saved[cb.id] = cb.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e) {}
+    });
+  }
+})();
 setInterval(load, 30000);   // poll board only; skip DOM rebuild when statuses unchanged
 setInterval(loadBrief, 60000);
 setInterval(loadCampaigns, 60000);
 setInterval(loadActivity, 30000);
+
+// --- GPU monitor (pane-gpu) ----------------------------------------------
+(function(){
+  const REFRESH_MS = 4000;
+  const $ = id => document.getElementById(id);
+  function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+  function setMetric(id, val, unit){
+    $(id).innerHTML = val + (unit != null ? `<small>${unit}</small>` : '');
+  }
+  function setBar(id, pct, color){
+    const b = $(id);
+    b.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    if (color) b.style.background = color;
+  }
+  function drawChart(series){
+    const svg = $('gpu-chart');
+    const sub = $('gpu-chartsub');
+    if (!series || !series.length){
+      svg.innerHTML = '<text x=20 y=90 class=lb>no val samples yet</text>';
+      sub.textContent = '—';
+      return;
+    }
+    const W = svg.clientWidth || 600, H = svg.clientHeight || 240;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    const M = {l: 38, r: 10, t: 8, b: 22};
+    const xs = series.map(s => s.step);
+    const ys = series.map(s => s.loss);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs);
+    const ymin = Math.min(...ys) - 0.05, ymax = Math.max(...ys) + 0.05;
+    const xn = v => M.l + (W - M.l - M.r) * (xmax === xmin ? 0.5 : (v - xmin) / (xmax - xmin));
+    const yn = v => H - M.b - (H - M.t - M.b) * (v - ymin) / (ymax - ymin);
+    const pts = series.map(s => `${xn(s.step)},${yn(s.loss)}`).join(' ');
+    let h = '';
+    for (let i = 0; i <= 4; i++){
+      const yv = ymin + (ymax - ymin) * i / 4;
+      const yp = yn(yv);
+      h += `<line class=gl x1=${M.l} y1=${yp} x2=${W - M.r} y2=${yp}/>`;
+      h += `<text class=lb x=2 y=${yp + 3}>${yv.toFixed(3)}</text>`;
+    }
+    h += `<line class=ax x1=${M.l} y1=${H - M.b} x2=${W - M.r} y2=${H - M.b}/>`;
+    h += `<line class=ax x1=${M.l} y1=${M.t} x2=${M.l} y2=${H - M.b}/>`;
+    const ix = [0, Math.floor(series.length/2), series.length-1];
+    for (const i of ix){
+      const s = series[i]; if (!s) continue;
+      h += `<text class=lb x=${xn(s.step)} y=${H - 4} text-anchor=middle>step ${s.step}</text>`;
+    }
+    h += `<polyline class=ln points="${pts}"/>`;
+    const last = series[series.length - 1];
+    h += `<circle class=pt cx=${xn(last.step)} cy=${yn(last.loss)} r=3/>`;
+    svg.innerHTML = h;
+    sub.textContent = `${series.length} eval pts · step ${last.step} · val ${last.loss.toFixed(4)} · acc ${last.acc.toFixed(4)} · ppl ${last.ppl.toFixed(2)}`;
+  }
+  function render(data){
+    $('gpu-ts').textContent = new Date(data.ts * 1000).toISOString().replace('T',' ').replace(/\..*/, 'Z');
+    $('gpu-host').textContent = '· ' + (data.ssh_host || '');
+    const g = data.gpu || {};
+    const dot = $('gpu-dot'), stTxt = $('gpu-st');
+    if (g.up){
+      dot.className = 'dot ok'; stTxt.textContent = 'live';
+      setMetric('gpu-util', g.util, '%'); setBar('gpu-utilb', g.util);
+      $('gpu-utilsub').textContent = g.name;
+      setMetric('gpu-mem', (g.mem_used_mib / 1024).toFixed(1), 'GiB');
+      setBar('gpu-memb', g.mem_pct);
+      $('gpu-memsub').textContent = `${g.mem_used_mib} / ${g.mem_total_mib} MiB`;
+      setMetric('gpu-temp', g.temp_c, '°C');
+      setBar('gpu-tempb', Math.min(100, g.temp_c), g.temp_c > 80 ? 'linear-gradient(90deg,#3fb950,#d29922,#f85149)' : null);
+      $('gpu-pwr').textContent = `${g.power_w} / ${g.power_max_w} W (${g.power_pct}%)`;
+    } else {
+      dot.className = 'dot down'; stTxt.textContent = 'GPU down';
+      setMetric('gpu-util','—','%'); setBar('gpu-utilb', 0);
+      setMetric('gpu-mem','—','GiB'); setBar('gpu-memb', 0);
+      setMetric('gpu-temp','—','°C'); setBar('gpu-tempb', 0);
+      $('gpu-utilsub').textContent = ''; $('gpu-memsub').textContent = '';
+      $('gpu-pwr').textContent = g.error || 'no nvidia-smi';
+    }
+    const r = data.running, c = data.current || {};
+    if (r){
+      $('gpu-jname').innerHTML = esc(r.job) + ' <span class="pill">running</span>';
+      $('gpu-jstep').textContent = c.step != null ? `${c.step} / ${c.total || '?'}` : '—';
+      $('gpu-jtoks').textContent = c.tok_s != null ? Math.round(c.tok_s).toLocaleString() : '—';
+      const lossEl = $('gpu-jloss');
+      lossEl.textContent = c.loss != null ? c.loss : '—';
+      lossEl.parentElement.classList.toggle('bad', c.loss === 'nan' || c.loss === 'NaN');
+      $('gpu-jacc').textContent = c.acc != null ? c.acc.toFixed(4) : '—';
+      $('gpu-jlr').textContent  = c.lr  != null ? c.lr.toExponential(2) : '—';
+      $('gpu-jeta').textContent = c.eta || '—';
+    } else {
+      $('gpu-jname').innerHTML = 'idle <span class="pill idle">queue empty</span>';
+      ['gpu-jstep','gpu-jtoks','gpu-jloss','gpu-jacc','gpu-jlr','gpu-jeta'].forEach(id => $(id).textContent = '—');
+    }
+    drawChart(data.series || []);
+    const tbody = document.querySelector('#gpu-qtab tbody');
+    tbody.innerHTML = '';
+    (data.history || []).slice().reverse().forEach(e => {
+      const tr = document.createElement('tr');
+      tr.className = e.state;
+      tr.innerHTML = `<td>${esc(e.state)}</td><td>${esc(e.job)}</td><td class=muted>${esc(e.ts)}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+  let lastOk = 0, inFlight = false;
+  async function tick(){
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const r = await fetch('api/gpu', {cache: 'no-store'});
+      const data = await r.json();
+      render(data);
+      lastOk = Date.now();
+      $('gpu-dot').className = 'dot ok';
+      $('gpu-st').textContent = 'live';
+    } catch (e) {
+      $('gpu-dot').className = 'dot stale';
+      $('gpu-st').textContent = 'fetch error';
+    } finally {
+      inFlight = false;
+    }
+  }
+  setInterval(() => {
+    if (Date.now() - lastOk > 15000){
+      $('gpu-dot').className = 'dot stale';
+      $('gpu-st').textContent = 'stale';
+    }
+  }, 2000);
+  window.addEventListener('resize', () => tick());
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    if (t.dataset.tab === 'gpu') tick();
+  }));
+  setInterval(tick, REFRESH_MS);
+  tick();
+})();
+
+// --- Testing tab: token2science workflow snapshot -------------------------
+(function(){
+  const $ = id => document.getElementById(id);
+  const num = v => (typeof v === 'number') ? v.toFixed(4) : '—';
+  const paperList = $('t2s-papers');
+  const sessionList = $('t2s-sessions');
+  const paperView = $('t2s-paper-view');
+  const sessionView = $('t2s-session-view');
+  const sessionLabel = $('t2s-session-label');
+  const sessionStop = $('t2s-session-stop');
+  let activePaper = '';
+  let activeSession = '';
+  let sessionTimer = null;
+  let sessionBusy = false;
+
+  function setSessionText(text){
+    sessionView.textContent = text || '';
+    sessionView.scrollTop = sessionView.scrollHeight;
+  }
+  function renderPaperView(name, txt){
+    activePaper = name || '';
+    const html = renderMarkdown(txt, {paperAsset:true});
+    paperView.innerHTML = `<h3>${htmlEscape(name)}</h3><div class=body>${html}</div>`;
+    paperView.querySelector('.body').scrollTop = 0;
+  }
+  function stopSession(ended){
+    if(sessionTimer){
+      clearInterval(sessionTimer);
+      sessionTimer = null;
+    }
+    sessionBusy = false;
+    sessionStop.disabled = true;
+    sessionLabel.textContent = ended ? 'session ended' : 'polling stopped';
+    if(ended){
+      activeSession = '';
+    } else {
+      activeSession = '';
+    }
+    renderSessionList((lastT2sData && lastT2sData.sessions) || []);
+  }
+  function openSession(name){
+    if(!name) return;
+    activeSession = name;
+    sessionLabel.textContent = `live: ${name}`;
+    sessionStop.disabled = false;
+    setSessionText('loading…');
+    renderSessionList((lastT2sData && lastT2sData.sessions) || []);
+    if(sessionTimer){
+      clearInterval(sessionTimer);
+      sessionTimer = null;
+    }
+    tickSession();
+    sessionTimer = setInterval(tickSession, 2000);
+  }
+  async function tickSession(){
+    if(!activeSession || sessionBusy) return;
+    sessionBusy = true;
+    try {
+      const r = await fetch(`/api/t2s/session?name=${encodeURIComponent(activeSession)}`, {cache:'no-store'});
+      const txt = await r.text();
+      if(!r.ok){
+        setSessionText(txt || '(session ended)');
+        stopSession(true);
+        return;
+      }
+      const body = (txt || '').trim();
+      if(body === '(session ended)'){
+        setSessionText(body);
+        stopSession(true);
+        return;
+      }
+      setSessionText(txt || '');
+    } catch(e) {
+      setSessionText('(session fetch failed)');
+    } finally {
+      sessionBusy = false;
+    }
+  }
+  function renderSessionList(sessions){
+    const names = sessions && sessions.length ? sessions : [];
+    sessionList.innerHTML = names.length
+      ? names.map(s => `<a href="#" class="t2s-sess-link${s===activeSession?' active':''}" data-sess="${htmlEscape(s)}"><span class=t2s-live></span><span class=name>${htmlEscape(s)}</span></a>`).join('')
+      : '<span class=hint>none active</span>';
+  }
+  function renderPaperList(papers){
+    const names = papers && papers.length ? papers : [];
+    paperList.innerHTML = names.length
+      ? names.map(p => `<a href="#" class="t2s-paper-link${p===activePaper?' active':''}" data-paper="${htmlEscape(p)}">📄 <span class=name>${htmlEscape(p)}</span></a>`).join('')
+      : '<span class=hint>none yet</span>';
+  }
+  async function openPaper(name){
+    if(!name) return;
+    activePaper = name;
+    renderPaperList(lastT2sData && lastT2sData.papers ? lastT2sData.papers : []);
+    paperView.innerHTML = `<h3>${htmlEscape(name)}</h3><div class=body><span class=hint>loading…</span></div>`;
+    try {
+      const r = await fetch(`/api/t2s/paper?name=${encodeURIComponent(name)}`, {cache:'no-store'});
+      if(!r.ok){
+        paperView.innerHTML = `<h3>${htmlEscape(name)}</h3><div class=body><span class=hint>could not load paper</span></div>`;
+        return;
+      }
+      const txt = await r.text();
+      renderPaperView(name, txt);
+    } catch(e) {
+      paperView.innerHTML = `<h3>${htmlEscape(name)}</h3><div class=body><span class=hint>paper fetch failed</span></div>`;
+    }
+  }
+  let lastT2sData = null;
+  paperList.addEventListener('click', e => {
+    const a = e.target.closest('[data-paper]');
+    if(!a) return;
+    e.preventDefault();
+    openPaper(a.dataset.paper);
+  });
+  sessionList.addEventListener('click', e => {
+    const a = e.target.closest('[data-sess]');
+    if(!a) return;
+    e.preventDefault();
+    openSession(a.dataset.sess);
+  });
+  sessionStop.addEventListener('click', () => {
+    stopSession(false);
+    sessionLabel.textContent = 'polling stopped';
+  });
+  function render(d){
+    if(!d){ return; }
+    lastT2sData = d;
+    $('t2s-meta').textContent = d.error ? d.error : new Date(d.ts*1000).toLocaleTimeString();
+    const T = d.totals || {};
+    $('t2s-totals').innerHTML =
+      `<span class=t2s-chip><b>${T.active_sessions||0}</b> active agents</span>`+
+      `<span class=t2s-chip><b>${T.goals||0}</b> goals</span>`+
+      `<span class=t2s-chip><b>${T.runs||0}</b> runs</span>`+
+      `<span class=t2s-chip><b>${T.confirmed||0}</b> confirmed</span>`+
+      `<span class=t2s-chip><b>${T.papers||0}</b> papers</span>`;
+    renderSessionList(d.sessions || []);
+    $('t2s-goals').innerHTML = (d.goals && d.goals.length) ? d.goals.map(g => {
+      const dir = g.lower_is_better ? '&lt;' : '&gt;';
+      const beat = g.beats==null ? '' : (g.beats ? '<span class=t2s-ok>beats bar</span>' : '<span class=t2s-below>below bar</span>');
+      return `<div class=t2s-goal><b>${g.id}</b> <span class=t2s-mut>${g.metric} ${dir} ${g.bar}</span> · ${g.nruns} runs · best ${num(g.best)} ${beat}</div>`;
+    }).join('') : '<span class=hint>none</span>';
+    $('t2s-runs').innerHTML = (d.runs && d.runs.length) ? d.runs.map(r =>
+      `<div class=t2s-run><code>${r.task}</code> <span class=t2s-mut>${r.worker}</span> ${r.metric}=${num(r.value)}</div>`
+    ).join('') : '<span class=hint>none yet</span>';
+    renderPaperList(d.papers || []);
+  }
+  async function t2sTick(){
+    try { const r = await fetch('/api/t2s'); render(await r.json()); } catch(e){}
+  }
+  window.t2sTick = t2sTick;
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    if (t.dataset.tab === 'testing') t2sTick();
+  }));
+  setInterval(() => {
+    const p = document.getElementById('pane-testing');
+    if (p && p.classList.contains('active')) t2sTick();
+  }, 5000);
+  t2sTick();
+})();
 </script></body></html>"""
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -850,7 +2091,9 @@ class H(http.server.BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path in ("/", "/index.html"):
             groups = [{"label": l, "color": c, "members": m, "desc": d} for (l, c, m, d) in GROUPS]
-            self._send(200, PAGE.replace("__GROUPS__", json.dumps(groups)))
+            page = PAGE.replace("__GROUPS__", json.dumps(groups))
+            page = page.replace("__TASTE__", json.dumps(sorted(TASTE_STATUSES)))
+            self._send(200, page)
         elif u.path == "/api/brief":
             txt = read_brief()
             if txt is None:
@@ -878,14 +2121,77 @@ class H(http.server.BaseHTTPRequestHandler):
                 self._send(400, "bad slug", "text/plain")
                 return
             self._send(200, json.dumps(read_result(slug)), "application/json")
+        elif u.path == "/api/t2s/paper":
+            name = parse_qs(u.query).get("name", [""])[0]
+            if not _T2S_PAPER_RE.fullmatch(name or ""):
+                self._send(400, "bad name", "text/plain")
+                return
+            txt = _t2s_paper_text(name)
+            if txt is None:
+                self._send(404, "not found", "text/plain")
+            else:
+                self._send(200, txt, "text/markdown; charset=utf-8")
+        elif u.path == "/api/t2s/asset":
+            relpath = parse_qs(u.query).get("path", [""])[0]
+            body, ctype, code = _t2s_asset_bytes(relpath)
+            if body is None:
+                self._send(code, "not found", "text/plain")
+            else:
+                self._send(200, body, ctype)
+        elif u.path == "/api/t2s/session":
+            name = parse_qs(u.query).get("name", [""])[0]
+            txt = _t2s_session_capture(name)
+            if txt is None:
+                self._send(400, "bad session", "text/plain")
+            else:
+                self._send(200, txt, "text/plain; charset=utf-8")
+        elif u.path == "/api/gpu":
+            try:
+                data = _gather_gpu()
+            except Exception as e:
+                data = {"ts": time.time(), "error": str(e)}
+            self._send(200, json.dumps(data), "application/json")
+        elif u.path == "/api/t2s":
+            try:
+                data = _gather_t2s()
+            except Exception as e:
+                data = {"ts": time.time(), "error": str(e)}
+            self._send(200, json.dumps(data), "application/json")
         else:
             self._send(404, "not found", "text/plain")
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path != "/api/flip":
+            self._send(404, "not found", "text/plain")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            req = json.loads(body.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            self._send(400, json.dumps({"error": "bad json"}), "application/json")
+            return
+        slugs = req.get("slugs") or []
+        action = req.get("action")
+        if not isinstance(slugs, list) or action not in ("approve", "reject"):
+            self._send(400, json.dumps({"error": "need {slugs:[...], action:approve|reject}"}), "application/json")
+            return
+        results = []
+        for slug in slugs:
+            ok, msg = flip_idea(str(slug), action)
+            results.append({"slug": slug, "ok": ok, "msg": msg})
+        self._send(200, json.dumps({"results": results}), "application/json")
 
     def log_message(self, *a):
         pass
 
+class _ThreadingServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    """Threaded so one slow handler (e.g. the GPU SSH poll) can't freeze the UI."""
+    daemon_threads = True
+    allow_reuse_address = True
+
 if __name__ == "__main__":
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", PORT), H) as httpd:
+    with _ThreadingServer(("127.0.0.1", PORT), H) as httpd:
         print(f"serving autoresearch board on http://localhost:{PORT}")
         httpd.serve_forever()

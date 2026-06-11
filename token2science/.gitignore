@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# simulation scratch
+testbench/.tmp-claims/
+testbench/.tmp-audit/
+testbench/.tmp/
+sim/.tmp-claims/
+sim/.tmp-audit/
+
+# local claim leases
+claims/

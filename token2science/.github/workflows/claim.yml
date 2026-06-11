@@ -1,0 +1,56 @@
+name: claim
+
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  claim:
+    if: github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/claim')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce exclusive claim
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          # Pseudocode with gh CLI:
+          # - Read issue labels and any stored claim timestamp.
+          # - Treat one unexpired claimed:<user> label as the active lease.
+          # - If another user's lease is still live, refuse /claim and comment why.
+          # - Otherwise remove stale claim labels, add claimed:${ACTOR}, and stamp now.
+          #
+          # gh issue view "$ISSUE_NUMBER" --json labels,comments
+          # if active claim exists for a different user; then
+          #   gh issue comment "$ISSUE_NUMBER" --body "/claim refused: already claimed"
+          # else
+          #   gh issue edit "$ISSUE_NUMBER" --add-label "claimed:${ACTOR}"
+          #   gh issue comment "$ISSUE_NUMBER" --body "claimed by ${ACTOR} at $(date -u +%FT%TZ)"
+          # fi
+          echo "claim enforcement pseudocode only"
+
+  sweep:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sweep expired claims
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Pseudocode with gh CLI:
+          # - List open issues carrying claimed:<user> labels.
+          # - Parse the stored claim timestamp for each issue.
+          # - Remove any claim label older than the TTL, default 60 minutes.
+          #
+          # gh issue list --state open --label 'claimed:*' ...
+          # gh issue edit "$ISSUE_NUMBER" --remove-label "$CLAIM_LABEL"
+          echo "claim sweep pseudocode only"

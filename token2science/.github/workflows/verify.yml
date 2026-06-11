@@ -1,0 +1,23 @@
+name: verify
+
+on:
+  pull_request:
+    paths:
+      - "token2science/runs/**"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' result; do
+            run_dir="$(dirname "$result")"
+            REPRODUCE=1 python token2science/verify/verify.py --run "$run_dir"
+          done < <(find token2science/runs -type f -name result.json -print0)

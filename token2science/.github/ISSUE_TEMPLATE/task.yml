@@ -1,0 +1,22 @@
+name: Task
+description: Propose a task for an existing goal.
+labels:
+  - task
+  - task:open
+body:
+  - type: input
+    id: parent_goal_id
+    attributes:
+      label: parent goal id
+    validations:
+      required: true
+  - type: textarea
+    id: what_to_do
+    attributes:
+      label: what to do
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: acceptance criteria
