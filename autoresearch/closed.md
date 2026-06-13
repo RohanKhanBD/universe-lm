@@ -28,6 +28,7 @@ The code-implementer never closes — if blocked it bounces the idea back to
 ## Closed by the loop (append below, newest first)
 
 <!-- reviewer/evidence step appends one line per close here -->
+- 112-lookahead-opt — drift: Δ=+0.63 vs both ctrls at tiny1m3m (trt 7.0381 vs ctrls 6.4047/6.4088; 150× the in-bracket ctrl gap) — 2026-06-13
 - 111-drop-path — drift: trt=6.4422 vs ctrls 6.3887/6.3953 (Δ +0.0535/+0.0469 ≫ gap 0.0066); well past DRIFT band +0.005; 12L depth too shallow for stochastic depth regularizer, ~3M tokens too short to amortize cost at tiny1m3m — 2026-06-13
 - 107-exclusive-self-attn -- null: trt=6.4047 vs ctrls 6.4163/6.3763 (delta -0.0116/+0.0284; gap 0.0400; two-ctrl bracket fails) at tiny1m3m -- 2026-06-13
 - 109-kda-channel-gate -- null: trt=6.4091 vs ctrls 6.4037/6.4078 (delta +0.0054/+0.0013; gap 0.0041; loses to both ctrls, inside null band |delta|<0.01) at tiny1m3m -- 2026-06-13
