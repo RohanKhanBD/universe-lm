@@ -1,8 +1,8 @@
 ---
 id: 073-deberta-disentangled
-status: needs-plan
+status: planning
 round: 1
-updated: 2026-06-11T01:34:07Z
+updated: 2026-06-13T04:05:12Z
 transfer-risk: low
 ---
 

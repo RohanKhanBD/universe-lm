@@ -5,6 +5,7 @@ from torchtune.modules import RotaryPositionalEmbeddings
 from .components import SquaredReLUFeedForward, SwiGLUFeedForward, GELUFeedForward, SaturatingReLUFeedForward
 from .fire_pe import FIREBias
 from .cope import CoPE
+from .deberta import DeBERTaRelativePositionBias
 from .fox import FoX
 from .canon_conv import CanonConv
 
@@ -1059,15 +1060,10 @@ class MultiHeadAttention(nn.Module):
         if use_q_expansion:
             self.q_expand = nn.Parameter(torch.zeros(q_size, d_model))
         # Q9 Decoupled content/position attention (DeBERTa-style).
-        # Two small projections (content + position), both zero-init so
-        # step-0 is exact baseline. Cost: 2 × (d_model × r + r × q_size).
+        # The shared relative-position module is created once at the
+        # MinimalLLM level and threaded into forward() so all layers reuse
+        # the same clipped distance table.
         self.use_decoupled_content_pos = use_decoupled_content_pos
-        if use_decoupled_content_pos:
-            r = max(8, self.d_k // 2)
-            self.dcp_qc = nn.Parameter(torch.zeros(r, d_model))
-            self.dcp_kc = nn.Parameter(torch.zeros(q_size, r))
-            self.dcp_qp = nn.Parameter(torch.zeros(r, d_model))
-            self.dcp_kp = nn.Parameter(torch.zeros(q_size, r))
         # Q10 Antisymmetric Q·K coupling. add Q^T S K, S skew-init 0.
         # S is stored as a full d_k×d_k; we enforce skew in forward.
         self.use_antisym_qk = use_antisym_qk
@@ -1372,7 +1368,7 @@ class MultiHeadAttention(nn.Module):
         Kr = K * cos + rotate_half(K) * sin
         return Qr, Kr
 
-    def forward(self, x, ve=None, gate_x=None, v_residual=None):
+    def forward(self, x, ve=None, gate_x=None, v_residual=None, deberta_relpos=None):
         batch_size, seq_len = x.size(0), x.size(1)
         # 013 — CoPE replaces RoPE, so the post-RoPE norm has no rotary
         # to post-norm. Reject the misconfiguration loudly so the
@@ -1745,19 +1741,12 @@ class MultiHeadAttention(nn.Module):
                 scores = scores + extra
             # ---- Q9 Decoupled content + position (DeBERTa-style) ----
             if self.use_decoupled_content_pos:
-                # Q_c, K_c: bottleneck r → q_size (one d_k per head).
-                # Both zero-init => step-0 contribution is 0.
-                Qc = F.linear(F.linear(x, self.dcp_qc), self.dcp_kc)  # [B, T, q_size]
-                Kc = F.linear(F.linear(x, self.dcp_qc), self.dcp_kc)
-                Qc = Qc.reshape(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-                Kc = Kc.reshape(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-                # Position stream: same shape, separate zero-init projections.
-                Qp = F.linear(F.linear(x, self.dcp_qp), self.dcp_kp)
-                Kp = F.linear(F.linear(x, self.dcp_qp), self.dcp_kp)
-                Qp = Qp.reshape(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-                Kp = Kp.reshape(batch_size, seq_len, self.n_heads, self.d_k).transpose(1, 2)
-                pos = torch.matmul(Qp, Kp.transpose(-1, -2))  # zero-init => 0 at step 0
-                scores = scores + pos
+                if deberta_relpos is None:
+                    raise RuntimeError(
+                        "use_decoupled_content_pos=True requires a shared "
+                        "DeBERTaRelativePositionBias module"
+                    )
+                scores = scores + deberta_relpos(Qn)
             # ---- Q27 Feature-map attention: phi(Q) phi(K)^T ----
             if self.use_q_feature_map:
                 Qp = self.q_fm_phi(Q)

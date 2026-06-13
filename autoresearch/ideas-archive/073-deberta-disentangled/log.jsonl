@@ -3,3 +3,4 @@
 {"ts":"2026-06-10T23:37:34Z","agent":"miner","idea":"073-deberta-disentangled","from":"needs-repitch","to":"needs-taste","round":3,"note":"applied 5 r2 findings: differentiated from 072 via content-conditional cross-term Q_c·K_p, replaces FIRE, shared K_p across layers (~6.6% param tax), cold-start argument from oversampled distance prior, three-way null/win/lose info-value framing"}
 {"ts":"2026-06-11T01:26:20Z","agent":"taste","idea":"073-deberta-disentangled","from":"needs-taste","to":"needs-review","round":3,"note":"accept: mechanism difference vs 072 is now explicit and content-conditional"}
 {"ts":"2026-06-11T01:34:07Z","agent":"reviewer","idea":"073-deberta-disentangled","from":"needs-review","to":"needs-plan","round":1,"note":"verdict: approve"}
+{"ts":"2026-06-13T04:05:12Z","agent":"code-implementer","idea":"073-deberta-disentangled","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
