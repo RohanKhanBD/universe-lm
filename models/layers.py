@@ -2151,6 +2151,20 @@ class TransformerBlock(nn.Module):
         # MultiHeadAttention (see the MHA `use_value_residual` kwarg
         # for the mechanism). Default off → baseline path bit-identical.
         use_value_residual: bool = False,
+        # 111 — DropPath / Stochastic Depth (Huang et al. 2016,
+        # arXiv:1603.09382). Per-block Bernoulli gate during training:
+        # with probability `1 - p_l` skip the whole block (residual
+        # update `x ← x`); with probability `p_l` keep and rescale the
+        # block's residual contribution by `1/p_l`. `p_l` is a function
+        # of the layer's position in the stack (passed in `forward` as
+        # `layer_index`) and `drop_path_max`. The first block has
+        # p_l = 1.0 (never dropped); the last block has p_l = 1 -
+        # drop_path_max. The coin is shared across the batch (one
+        # flip per block per step). Eval: no stochasticity, no rescale.
+        # Default off → baseline path bit-identical. See
+        # `autoresearch/ideas/111-drop-path/idea.md`.
+        use_drop_path: bool = False,
+        drop_path_max: float = 0.1,
     ):
         super().__init__()
         # #75 Post-norm: when set, the norm is applied AFTER the
@@ -2292,6 +2306,13 @@ class TransformerBlock(nn.Module):
             self.re_zero_alpha_attn = nn.Parameter(torch.zeros(1))
             self.re_zero_alpha_ffn = nn.Parameter(torch.zeros(1))
         self._init_resid(resid_mode, d_model, n_layers)
+        # 111 — DropPath reads `self.n_layers` in `forward` to schedule
+        # `p_l = 1 - drop_path_max * l / (n_layers - 1)`. The kwarg was
+        # only used inside `_init_resid` for the DeepNorm constant, so
+        # without this attribute the trt training forward crashes at
+        # the first drop-path branch. Default `n_layers=1` keeps
+        # single-block callers (the closure tests) safe.
+        self.n_layers = int(n_layers)
         # #47 FFN embeddings: add a learned projection of the factorized
         # token embedding to the FFN input. Different position from
         # V-embed (#29, inside attention) and O-embed (#33, post-O).
@@ -2311,6 +2332,13 @@ class TransformerBlock(nn.Module):
         self.use_canon_conv = use_canon_conv
         if self.use_canon_conv:
             self.canon_conv = CanonConv(d_model)
+        # 111 — DropPath / Stochastic Depth (Huang et al. 2016). The
+        # `p_l` is computed in `forward` from `drop_path_max`,
+        # `n_layers` (already a block attr, used by DeepNorm), and
+        # the per-call `layer_index` kwarg. Flag is off by default so
+        # the entire branch is skipped → baseline path bit-identical.
+        self.use_drop_path = use_drop_path
+        self.drop_path_max = float(drop_path_max)
 
     def _init_resid(self, resid_mode: str, d_model: int, n_layers: int):
         """Build params for the selected residual-add lever. Each sublayer
@@ -2435,7 +2463,32 @@ class TransformerBlock(nn.Module):
             return x + f / (1.0 - p)
         return x + f
 
-    def forward(self, x, x0=None, ve=None, v_residual=None):
+    def forward(self, x, x0=None, ve=None, v_residual=None, layer_index=None):
+        # 111 — DropPath / Stochastic Depth. Linear schedule
+        # `p_l = 1 - drop_path_max * l / (n_layers - 1)` where `l` is
+        # the 0-indexed layer position (l=0 → p_l=1.0; l=n_layers-1 →
+        # p_l = 1 - drop_path_max). One coin flip per block per step,
+        # shared across the batch (one 0-dim sample). Eval has no
+        # stochasticity. When the block is kept, the residual
+        # contribution `(out - x_orig)` is rescaled by `1/p_l` so the
+        # expected residual magnitude matches the baseline. The rescale
+        # is exact for any p_l ∈ (0, 1]; for n_layers==1 we set p_l=1.0
+        # (no drop) to avoid the divide-by-zero.
+        drop_path_scale = 1.0
+        if self.use_drop_path and self.training and layer_index is not None:
+            if self.n_layers > 1:
+                p_l = 1.0 - self.drop_path_max * float(layer_index) / float(self.n_layers - 1)
+            else:
+                p_l = 1.0
+            # Clamp to (0, 1] for safety (drop_path_max could be > 1
+            # in pathological configs); torch.rand(()) is a 0-dim
+            # tensor on the default device.
+            p_l = float(p_l)
+            if p_l < 1.0:
+                if torch.rand(()) >= p_l:
+                    return x  # block skipped entirely
+                drop_path_scale = 1.0 / p_l
+        x_orig = x if drop_path_scale != 1.0 else None
         # Re-inject the original embedding before attention/MLP (#20)
         if self.use_embed_residual:
             x = self.resid_m0 * x + self.resid_m1 * x0
@@ -2533,4 +2586,12 @@ class TransformerBlock(nn.Module):
                 x = self._resid_add(x, self.dropout(ff_out), "ffn")
             else:
                 x = x + self.dropout(ff_out)
+        # 111 — DropPath rescale: when this block was kept during
+        # training, rescale its residual contribution by `1/p_l` so
+        # the expected residual magnitude matches the no-drop-path
+        # baseline. `drop_path_scale == 1.0` (and thus `x_orig is None`)
+        # when the flag is off or eval mode — short-circuited, no
+        # extra ops on the baseline path.
+        if x_orig is not None:
+            x = x_orig + (x - x_orig) * drop_path_scale
         return x

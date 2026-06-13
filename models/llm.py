@@ -392,6 +392,12 @@ class MinimalLLM(nn.Module):
                     use_ssmax=self.use_ssmax,
                     use_canon_conv=self.use_canon_conv,
                     use_value_residual=self.use_value_residual,
+                    # 111 — DropPath / Stochastic Depth. Pass-through
+                    # to the block; the per-step Bernoulli sample runs
+                    # inside `TransformerBlock.forward` keyed off the
+                    # `layer_index` kwarg passed by the model loop.
+                    use_drop_path=getattr(config, "use_drop_path", False),
+                    drop_path_max=getattr(config, "drop_path_max", 0.1),
                     rope_base=self.rope_base,
                     use_tied_qk=self.use_tied_qk,
                     use_mla=self.use_mla,
@@ -638,7 +644,7 @@ class MinimalLLM(nn.Module):
                 if self.unet_bridge_norm:
                     skip = self.unet_bridge_norms[skip_idx](skip)
                 x = x + gate * skip
-            x = block(x, x0, ve, v_residual=v_residual)
+            x = block(x, x0, ve, v_residual=v_residual, layer_index=i)
             if self.use_value_residual and i == 0:
                 # After layer-0 MHA forward, V_1 is stashed at
                 # `block.attention._v_residual` (post-transpose,

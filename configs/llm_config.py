@@ -385,6 +385,21 @@ class LLMConfig:
     # selected; the post-LN is always `nn.LayerNorm` (the residual-stream
     # re-bounding role, separate from the magnitude-stabilizing pre-LN).
     use_sub_ln: bool = False
+    # 111 — DropPath / Stochastic Depth (Huang et al. 2016, arXiv:1603.09382).
+    # Per-block Bernoulli gate during training: with probability `1 - p_l`
+    # skip the whole block (residual update `x ← x`), with probability `p_l`
+    # keep and rescale the block's contribution by `1/p_l` so the expected
+    # residual magnitude is preserved. `p_l` is linearly scheduled from 1.0
+    # at the first block to `1 - drop_path_max` at the last
+    # (`p_l = 1 - drop_path_max * l / (n_layers - 1)`, l = 0-indexed layer
+    # position). The coin is shared across the batch (one flip per block per
+    # step) — matches the paper and avoids per-token noise that hurts causal
+    # LM. Eval has no stochasticity: full block, no rescale. Default off →
+    # baseline path bit-identical; flag on + drop_path_max=0.1 is the original
+    # paper default (ViT-B/16 12L used 0.1; ConvNeXt 18-36L uses 0.1-0.4).
+    # See `autoresearch/ideas/111-drop-path/idea.md`.
+    use_drop_path: bool = False
+    drop_path_max: float = 0.1
     # 024 — Gated Attention (Qiu et al. 2025, arXiv:2505.06708): per-head
     # *scalar* sigmoid gate on the head output `o_h = A_h V_h`, applied
     # post-AV and pre-merge with the O projection: `o_h ← o_h · 2·σ(W_g·x+b)`.
@@ -506,6 +521,18 @@ class LLMConfig:
     use_swan: bool = False
     warmup_ratio: float = 0.0
     schedule_type: str = "constant"
+    # 112 — Lookahead Optimizer Wrapper (Zhang et al. 2019, arXiv:1907.08610).
+    # Wraps the *list* of inner optimizers (Muon, AdamW, ...): every k inner
+    # steps, pull slow weights halfway toward fast weights and reset fast to
+    # slow. Also clears the inner optimizer's momentum buffers so the next
+    # inner step doesn't see stale gradients from before the slow reset.
+    # k=5, alpha=0.5 are the paper's defaults. With use_lookahead=False
+    # (default) the wrapper is fully inert → baseline path bit-identical.
+    # Identity at step 0: slow = theta_init, first inner step uses the
+    # baseline Muon/AdamW path unchanged.
+    use_lookahead: bool = False
+    lookahead_k: int = 5
+    lookahead_alpha: float = 0.5
     # Cautious Muon (Liang et al. 2024, arXiv 2411.16085): one-line sign-mask
     # on the orthogonalized update — zero out components whose sign disagrees
     # with the current gradient. Suppresses stale-momentum artifacts. Bit-
@@ -1147,6 +1174,54 @@ class Tiny1M3MExclusiveSelfAttnConfig(Tiny1M3MConfig):
     so step 0 is the baseline graph.
     """
     use_exclusive_self_attn: bool = True
+
+
+@dataclass
+class Tiny1M3MDropPathConfig(Tiny1M3MConfig):
+    """Tiny1M3M with DropPath / Stochastic Depth (Huang et al. 2016).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val 6.4306).
+    `drop_path_max=0.1` matches the original paper default and ViT-B/16
+    12L. The first block is never dropped (p_1 = 1.0); only later
+    blocks are candidates. Single coin flip per block per step,
+    shared across the batch. The drop-path branch lives in
+    `TransformerBlock.forward` and only fires when
+    `self.training=True`.
+
+    PASS ≤ ctrl − 0.005 (small/null band — 12L is at the shallow end
+    of the published drop-path literature, so taste puts leverage at
+    the low end). NULL band |Δ| < 0.005. DRIFT > +0.005. See
+    `autoresearch/ideas/111-drop-path/idea.md`.
+    """
+    use_drop_path: bool = True
+    drop_path_max: float = 0.1
+
+
+@dataclass
+class Tiny1M3MLookaheadConfig(Tiny1M3MConfig):
+    """Tiny1M3M with Lookahead Optimizer Wrapper (Zhang et al. 2019).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val 6.4306).
+    Wraps the *list* of inner optimizers (Muon, AdamW): every k=5
+    inner steps, the slow weights pull halfway toward the fast
+    weights (`slow ← slow + α·(fast − slow)`, α=0.5) and the fast
+    weights are reset to `slow`. Inner optimizer momentum buffers are
+    cleared at the outer step so the next inner step doesn't see
+    stale gradients from before the slow reset. The wrapper sits
+    *outside* `optimizer.step()` in the training loop — it does not
+    touch the per-step math of Muon or AdamW, only the trajectory
+    shape. Identity at step 0: slow = θ_init, first inner step is
+    the baseline Muon/AdamW path.
+
+    PASS ≤ ctrl − 0.005 (taste's mid-band for a trajectory-smoothing
+    wrapper at 12L depth; paper effect is small at this scale but the
+    `k=5` cycle length matches the inner step count of the warmup
+    phase so a null is informative). NULL band |Δ| < 0.005. DRIFT
+    > +0.005. See `autoresearch/ideas/112-lookahead-opt/idea.md`.
+    """
+    use_lookahead: bool = True
+    lookahead_k: int = 5
+    lookahead_alpha: float = 0.5
 
 
 @dataclass

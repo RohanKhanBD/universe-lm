@@ -1,8 +1,8 @@
 ---
 id: 111-drop-path
-status: needs-taste
+status: running
 round: 1
-updated: 2026-06-13T08:00:00Z
+updated: 2026-06-13T10:04:38Z
 transfer-risk: low
 plain: It tries to randomly skip whole transformer blocks during training so the model can't lean on any single layer and has to spread the work.
 ---
@@ -82,3 +82,19 @@ attention/FFN/position lever in the closed list — it changes the
 `p_max=0.1` would say "skip-dropping is too aggressive for this
 parameter count" and inform how much room there is for stochastic
 regularization in future experiments.
+
+## Plan
+
+**Files**
+- `configs/llm_config.py`: add `use_drop_path: bool = False`, `drop_path_max: float = 0.1`
+- `models/layers.py`: extend `TransformerBlock.__init__` to accept `use_drop_path` / `drop_path_max` (and reuse the existing `n_layers` kwarg), store as instance attrs. In `forward`, take an optional `layer_index` kwarg. When `use_drop_path=True` and `self.training=True` and `layer_index is not None`: sample one Bernoulli coin per step `keep = torch.rand(()) < p_l` where `p_l = 1 - drop_path_max * layer_index / (n_layers - 1)` (1.0 if `n_layers==1`); if `keep=0` return `x` (skip the whole block); if `keep=1` multiply the block's residual contribution by `1/p_l` via `out = x_orig + (out - x_orig) / p_l`. Identity at step 0 because (a) the flag is off by default so the entire branch is skipped, and (b) even with flag on, `drop_path_max * 0 = 0` for `layer_index=0` gives `p_l=1.0` so the first block is never dropped and the rescale is `1.0`.
+- `models/llm.py`: forward `use_drop_path` / `drop_path_max` from `LLMConfig` into `TransformerBlock(...)` for every block; pass `layer_index=i` to `block(...)` in the forward loop (the actual position, not the unique-block index, so layer tying still gets the right survival probability per depth).
+
+**Run command**
+```
+/venv/main/bin/python -m training.train --config-name Tiny1M3MDropPath
+```
+(after we add the `Tiny1M3MDropPathConfig` subclass — for now use `LLMConfig(use_drop_path=True, drop_path_max=0.1)` passed at runtime; we'll add the config class in the same PR).
+
+**Reading val loss**
+Tail the last eval-milestone line in `runs/tiny1m3m_droppath_<ts>/metrics.json` (or whichever the runner writes) — the same place `runner.md` points the tiny1m3m screen reads from. PASS criterion: ≤ `Tiny1M3MConfig` ctrl − 0.005 (matches the "small/null" bet on a 12-block stack). NULL band |Δ| < 0.005. DRIFT > +0.005.
