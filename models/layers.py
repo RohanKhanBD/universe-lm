@@ -13,6 +13,8 @@ from .mod_router import MoDRouter
 from .short_conv import ShortConv1D
 from .switch_ffn import SwitchFFN
 from .expert_choice_moe import ExpertChoiceMoE
+from .ttt_linear import TTTFeedForward
+from .xlayer_attn import XLayerCrossAttn
 
 
 class Rotary(nn.Module):
@@ -2575,6 +2577,23 @@ class TransformerBlock(nn.Module):
         # `autoresearch/ideas/145-expert-choice/idea.md`.
         use_expert_choice_moe: bool = False,
         n_moe_experts: int = 4,
+        # 149 — TTT-Linear (Sun, Yang, et al. 2024, arXiv:2407.04620,
+        # §3.2). Replaces the FFN's up-projection with a `TTTLinear`
+        # — a per-input closed-form fast-weight linear that updates
+        # its own weight from the input on the fly (one Newton-style
+        # gradient step on the auto-encoding loss `||W·x − x||²`).
+        # The down-projection stays a standard `nn.Linear` so the FFN
+        # output side is unchanged. `ttt_lr_init=0.0` (default) zero-
+        # inits the per-layer TTT learning rate so `lr=0` at step 0
+        # ⇒ the `TTTLinear` short-circuits to `F.linear(x, weight, b)`
+        # with the same `kaiming_uniform_` weight as `nn.Linear` ⇒
+        # the FFN is bit-identical to a vanilla `SquaredReLUFeedForward`
+        # at step 0. With `use_ttt_ffn=False` (default) the
+        # `TTTFeedForward` module is never built and the baseline FFN
+        # path is bit-identical. See
+        # `autoresearch/ideas/149-ttt-linear/idea.md`.
+        use_ttt_ffn: bool = False,
+        ttt_lr_init: float = 0.0,
         # 129 — YOCO shared KV (Sun et al. 2024, arXiv:2405.05254).
         # When set, the inner MHA is built with `use_shared_kv=True`,
         # which makes the MHA skip its W_K, W_V slices of the merged
@@ -2605,6 +2624,18 @@ class TransformerBlock(nn.Module):
         # `autoresearch/ideas/148-focal-mod/idea.md`.
         use_focal_mod: bool = False,
         focal_mod_kernels: tuple = (3, 5, 7),
+        # 150 — Cross-Layer Feedback Attention (Holtzman et al. 2020,
+        # Feedback Transformer). Each block reads from a small cache
+        # of the previous K layers' pre-FFN residual states via a
+        # `XLayerCrossAttn` head, and adds the result as a *gated*
+        # residual branch. `xlayer_gate = nn.Parameter(torch.zeros(1))`
+        # per block → step-0 ≡ no-feedback baseline. K=2 by default
+        # (the spec pin). Default off → baseline path bit-identical
+        # (no cross-attn module built, no kwarg plumbed). See
+        # `models/xlayer_attn.py` and
+        # `autoresearch/ideas/150-xlayer-feedback/idea.md`.
+        use_xlayer_feedback: bool = False,
+        xlayer_k: int = 2,
     ):
         super().__init__()
         # #75 Post-norm: when set, the norm is applied AFTER the
@@ -2754,6 +2785,18 @@ class TransformerBlock(nn.Module):
                 n_experts=n_moe_experts,
                 dropout=dropout,
                 ffn_variant=ffn_variant,
+            )
+        elif use_ttt_ffn:
+            # 149 — TTT-Linear: squared_relu FFN whose up_proj is a
+            # `TTTLinear` (per-input closed-form fast-weight update).
+            # `ttt_lr_init=0.0` (default) keeps the forward bit-
+            # identical to a vanilla `SquaredReLUFeedForward` at step
+            # 0 — the `TTTLinear` short-circuits to `F.linear(x, w, b)`
+            # before any fast-weight matmul fires. The branch sits
+            # AFTER the MoE branches so the MoE flags win when more
+            # than one FFN-replacement flag is set.
+            self.feed_forward = TTTFeedForward(
+                d_model, d_ff, dropout=dropout, ttt_lr_init=ttt_lr_init,
             )
         elif ffn_variant == "squared_relu":
             self.feed_forward = SquaredReLUFeedForward(d_model, d_ff, dropout)
@@ -2905,6 +2948,28 @@ class TransformerBlock(nn.Module):
         else:
             self.focal_mod = None
 
+        # 150 — Cross-Layer Feedback Attention. Built lazily; never
+        # called when `use_xlayer_feedback=False` so the baseline path
+        # is bit-identical. K=2 by default (the spec pin). The per-
+        # block scalar `xlayer_gate` is the identity-init lever: 0
+        # means the cross-attn contribution is exactly 0 at step 0
+        # regardless of the Q/K/V projection values. See
+        # `models/xlayer_attn.py` and
+        # `autoresearch/ideas/150-xlayer-feedback/idea.md`.
+        self.use_xlayer_feedback = use_xlayer_feedback
+        self.xlayer_k = max(1, int(xlayer_k))
+        if self.use_xlayer_feedback:
+            self.xlayer_attn = XLayerCrossAttn(
+                d_model,
+                k_window=self.xlayer_k,
+                n_heads=1,
+                head_dim=min(16, d_model),
+            )
+            # Scalar per-block gate (init 0 ⇒ identity at step 0).
+            self.xlayer_gate = nn.Parameter(torch.zeros(1))
+        else:
+            self.xlayer_attn = None
+
     def _init_resid(self, resid_mode: str, d_model: int, n_layers: int):
         """Build params for the selected residual-add lever. Each sublayer
         ('attn'/'ffn') gets its own params unless the mode is shared. Identity
@@ -3028,7 +3093,7 @@ class TransformerBlock(nn.Module):
             return x + f / (1.0 - p)
         return x + f
 
-    def forward(self, x, x0=None, ve=None, v_residual=None, layer_index=None, shared_kv=None):
+    def forward(self, x, x0=None, ve=None, v_residual=None, layer_index=None, shared_kv=None, xlayer_mem=None):
         # 111 — DropPath / Stochastic Depth. Linear schedule
         # `p_l = 1 - drop_path_max * l / (n_layers - 1)` where `l` is
         # the 0-indexed layer position (l=0 → p_l=1.0; l=n_layers-1 →
@@ -3215,6 +3280,21 @@ class TransformerBlock(nn.Module):
                 x = self._resid_add(x, self.dropout(attn_out), "attn")
             else:
                 x = x + self.dropout(attn_out)
+            # 150 — Cross-Layer Feedback: at this point `x` is the
+            # block's pre-FFN state. Save it for the cross-attn query
+            # and for the mem update at the end. The cross-attn reads
+            # from `xlayer_mem` (the previous K blocks' pre-FFN
+            # states, accumulated by the model loop) and adds a gated
+            # contribution back to the residual. `xlayer_gate=0` at
+            # init ⇒ contribution is exactly 0 at step 0 regardless
+            # of the Q/K/V projection values ⇒ forward is
+            # bit-identical to the no-feedback baseline. After the
+            # block returns, the model loop appends `x_pre_ffn` to
+            # `xlayer_mem` so the NEXT block can read it.
+            x_pre_ffn = x
+            if self.use_xlayer_feedback:
+                y_xa = self.xlayer_attn(x_pre_ffn, xlayer_mem)
+                x = x_pre_ffn + self.xlayer_gate * y_xa
 
             ffn_in = self.norm2(x)
             if self.use_ffn_embed and ve is not None:
@@ -3269,4 +3349,15 @@ class TransformerBlock(nn.Module):
             c = float(k) / float(T)
             delta = x - x_in
             x = x_in + (mask.unsqueeze(-1) * c) * delta
+        # 150 — Cross-Layer Feedback: append the block's pre-FFN state
+        # to `xlayer_mem` so the NEXT block can read it via the cross-
+        # attn head. Mutate the list in place. Truncate to the last
+        # `xlayer_k` entries. `xlayer_mem` is `None` when the lever is
+        # off (the model loop only allocates it for
+        # `use_xlayer_feedback=True`), so this branch is no-op on the
+        # baseline path.
+        if self.use_xlayer_feedback and xlayer_mem is not None:
+            xlayer_mem.append(x_pre_ffn)
+            if len(xlayer_mem) > self.xlayer_k:
+                del xlayer_mem[: len(xlayer_mem) - self.xlayer_k]
         return x

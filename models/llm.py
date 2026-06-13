@@ -296,6 +296,27 @@ class MinimalLLM(nn.Module):
         # `autoresearch/ideas/145-expert-choice/idea.md`.
         self.use_expert_choice_moe = getattr(config, "use_expert_choice_moe", False)
         self.n_moe_experts = getattr(config, "n_moe_experts", 4)
+        # 150 — Cross-Layer Feedback Attention (Holtzman et al. 2020,
+        # Feedback Transformer). When on, each block reads from a
+        # cache of the previous K blocks' pre-FFN states via a small
+        # `XLayerCrossAttn` head. K=2 by default (the spec pin).
+        # Per-block `xlayer_gate=0` init ⇒ step-0 ≡ no-feedback
+        # baseline. Default off → baseline path bit-identical (no
+        # `XLayerCrossAttn` module built). See
+        # `models/xlayer_attn.py` and
+        # `autoresearch/ideas/150-xlayer-feedback/idea.md`.
+        self.use_xlayer_feedback = getattr(config, "use_xlayer_feedback", False)
+        self.xlayer_k = max(1, int(getattr(config, "xlayer_k", 2)))
+        # 149 — TTT-Linear (Sun et al. 2024, arXiv:2407.04620). When
+        # True, the block's FFN is replaced with `TTTFeedForward`
+        # (squared_relu FFN whose up_proj is a `TTTLinear` — per-input
+        # closed-form fast-weight update). `ttt_lr_init=0.0` (default)
+        # keeps step-0 bit-identical to a vanilla `SquaredReLUFeedForward`.
+        # Default off → baseline FFN path bit-identical (no
+        # `TTTFeedForward` module built). See
+        # `models/ttt_linear.py` + `autoresearch/ideas/149-ttt-linear/idea.md`.
+        self.use_ttt_ffn = getattr(config, "use_ttt_ffn", False)
+        self.ttt_lr_init = getattr(config, "ttt_lr_init", 0.0)
         # 118 — Mixture-of-Depths (Raposo et al. 2024, arXiv:2404.02258):
         # when on, each block builds a per-token `MoDRouter` and gates
         # the block's residual update to the top-k = `mod_capacity · T`
@@ -518,6 +539,12 @@ class MinimalLLM(nn.Module):
                         # `autoresearch/ideas/145-expert-choice/idea.md`.
                         use_expert_choice_moe=self.use_expert_choice_moe,
                         n_moe_experts=self.n_moe_experts,
+                        # 149 — TTT-Linear pass-through to the YOCO
+                        # upper-half block. Default off → FFN path
+                        # bit-identical. See
+                        # `autoresearch/ideas/149-ttt-linear/idea.md`.
+                        use_ttt_ffn=self.use_ttt_ffn,
+                        ttt_lr_init=self.ttt_lr_init,
                         use_mod=self.use_mod,
                         mod_capacity=self.mod_capacity,
                         mod_router_hidden=self.mod_router_hidden,
@@ -576,6 +603,12 @@ class MinimalLLM(nn.Module):
                         q_per_token_rope_hidden=self.q_per_token_rope_hidden,
                         use_q_noise_reg=self.use_q_noise_reg,
                         value_embed_rank=value_embed_rank,
+                        # 150 — Cross-Layer Feedback pass-through to
+                        # the YOCO upper-half block. Default off →
+                        # baseline path bit-identical. See
+                        # `autoresearch/ideas/150-xlayer-feedback/idea.md`.
+                        use_xlayer_feedback=self.use_xlayer_feedback,
+                        xlayer_k=self.xlayer_k,
                     )
                     for _ in range(config.n_layers - self.yoco_split)
                 ]
@@ -653,6 +686,12 @@ class MinimalLLM(nn.Module):
                     # 145 — Expert-Choice MoE pass-through to the block.
                     use_expert_choice_moe=self.use_expert_choice_moe,
                     n_moe_experts=self.n_moe_experts,
+                    # 149 — TTT-Linear pass-through to the standard
+                    # transformer block. Default off → FFN path bit-
+                    # identical. See
+                    # `autoresearch/ideas/149-ttt-linear/idea.md`.
+                    use_ttt_ffn=self.use_ttt_ffn,
+                    ttt_lr_init=self.ttt_lr_init,
                     # 118 — Mixture-of-Depths pass-through to the block.
                     use_mod=self.use_mod,
                     mod_capacity=self.mod_capacity,
@@ -732,6 +771,13 @@ class MinimalLLM(nn.Module):
                     mega_beta=getattr(config, "mega_beta", 0.9),
                     mega_use_input=getattr(config, "mega_use_input", True),
                     value_embed_rank=value_embed_rank,
+                    # 150 — Cross-Layer Feedback Attention pass-through
+                    # to the block. Default off → baseline path bit-
+                    # identical (no `XLayerCrossAttn` module built, no
+                    # `xlayer_gate` param allocated). See
+                    # `autoresearch/ideas/150-xlayer-feedback/idea.md`.
+                    use_xlayer_feedback=self.use_xlayer_feedback,
+                    xlayer_k=self.xlayer_k,
                 )
                 for i in range(n_unique)
             ]
@@ -1013,6 +1059,14 @@ class MinimalLLM(nn.Module):
         # block (i = yoco_split - 1). Stays None on the lower half so
         # those blocks use the standard K, V projection path.
         shared_kv = None
+        # 150 — Cross-Layer Feedback: `xlayer_mem` is a forward-pass-
+        # local list of pre-FFN residual states from the previous
+        # blocks. The current block reads from this list (Q from the
+        # current pre-FFN x, K/V from the previous K pre-FFN states)
+        # and appends its own pre-FFN x to the list before returning.
+        # Stays as an empty list when the lever is off (the block
+        # branch is no-op on the baseline path).
+        xlayer_mem: list = []
         for i in range(self.config.n_layers):
             # 129 — YOCO dispatch: for i >= yoco_split, use the
             # upper-half ModuleList (YOCOLlamaBlock with
@@ -1057,6 +1111,17 @@ class MinimalLLM(nn.Module):
                     v_residual=v_residual,
                     layer_index=i,
                     shared_kv=block_shared_kv,
+                    # 150 — Cross-Layer Feedback: forward-pass-local
+                    # list of pre-FFN x from the previous K blocks.
+                    # The block reads from it and appends its own
+                    # pre-FFN x. `None` when the lever is off → the
+                    # block branch is a no-op and the baseline path
+                    # is bit-identical. We only allocate the list
+                    # when the lever is on; the block itself guards
+                    # on `use_xlayer_feedback` and `xlayer_mem is
+                    # not None` to keep the baseline path zero-
+                    # overhead.
+                    xlayer_mem=(xlayer_mem if self.use_xlayer_feedback else None),
                 )
             if self.use_value_residual and i == 0:
                 # After layer-0 MHA forward, V_1 is stashed at
@@ -1119,9 +1184,9 @@ class MinimalLLM(nn.Module):
             # totaling ~9 GiB just for the MoS forward — too big for
             # an RTX 3060 12GB. We chunk over the leading token
             # dimension so per-chunk memory is O(chunk · K · V · 4B).
-            # Default `mos_chunk_size=256` keeps the per-chunk peak
-            # around 200 MB (5 tensors of size chunk·V = 48 MB each,
-            # ~240 MB concurrent). Identity at step 0 still holds:
+            # Default `mos_chunk_size=128` keeps the per-chunk peak
+            # around 150 MB (5 tensors of size chunk·V = 25 MB each,
+            # ~125 MB concurrent). Identity at step 0 still holds:
             # for every chunk the result is `log_softmax(W_0 · h)`
             # (because `mos_pi_proj` is init one-hot at [+1e4, -1e4,
             # -1e4, -1e4] ⇒ `log π = [0, -2e4, -2e4, -2e4]` ⇒ the
@@ -1130,7 +1195,7 @@ class MinimalLLM(nn.Module):
             # before returning, so the output is bit-identical to
             # the un-chunked reference at step 0.
             K = self.n_mos_components
-            chunk = int(getattr(self.config, "mos_chunk_size", 256))
+            chunk = int(getattr(self.config, "mos_chunk_size", 128))
             V = self.config.vocab_size
             x_flat = x.reshape(-1, x.shape[-1])  # (N, d_model)
             N = x_flat.shape[0]
@@ -1146,22 +1211,29 @@ class MinimalLLM(nn.Module):
                 else:
                     z = F.linear(xc, self.emb_proj.weight.t())
                     logits_0 = F.linear(z, self.token_embedding.weight)
-                # log_p_0 = log_softmax(logits_0). Compute via
-                # logsumexp + in-place sub to avoid allocating a full
-                # log-prob intermediate per chunk.
+                # log_p_0 = log_softmax(logits_0). Use a non-in-place
+                # `sub` (NOT `sub_`) so the autograd graph stays intact
+                # — `sub_` would clobber the version counter on
+                # `logits_0` and `cross_entropy.backward()` would
+                # throw "variable has been modified by an inplace
+                # operation" (this was a bug in the round-1 chunked
+                # recode that surfaced only when the trainer's
+                # gradient was actually requested). Memory cost is
+                # one extra (n, V) tensor per chunk (~25 MB at
+                # n=128, V=49152, fp32) — acceptable.
                 log_z_0 = torch.logsumexp(logits_0, dim=-1, keepdim=True)
-                logits_0.sub_(log_z_0)  # in-place → log_p_0
+                log_p_0 = logits_0 - log_z_0
                 # Mix weights: π = softmax(W_π · x) over K components.
                 log_pi = F.log_softmax(self.mos_pi_proj(xc), dim=-1)  # (n, K)
                 # log_p_mixed = logsumexp_k (log_pi_k + log_p_k).
                 # Build incrementally so we never materialize (n, K, V).
-                log_p_mixed = logits_0 + log_pi[:, 0:1]  # (n, V)
+                log_p_mixed = log_p_0 + log_pi[:, 0:1]  # (n, V)
                 for k_idx in range(1, K):
                     logits_h = self.mos_heads_extra[k_idx - 1](xc)  # (n, V)
                     log_z = torch.logsumexp(logits_h, dim=-1, keepdim=True)
-                    logits_h.sub_(log_z)  # in-place → log_p_k
+                    log_p_h = logits_h - log_z  # non-in-place → log_p_k
                     log_p_mixed = torch.logaddexp(
-                        log_p_mixed, log_pi[:, k_idx:k_idx + 1] + logits_h
+                        log_p_mixed, log_pi[:, k_idx:k_idx + 1] + log_p_h
                     )
                 log_p_chunks.append(log_p_mixed)
             log_p_mixed = torch.cat(log_p_chunks, dim=0)  # (N, V)

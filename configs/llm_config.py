@@ -341,12 +341,19 @@ class LLMConfig:
     # See `autoresearch/ideas/144-mos/idea.md`.
     use_mos: bool = False
     n_mos_components: int = 4
-    # Forward chunk size (along B*T) for the MoS head. Default 256
+    # Forward chunk size (along B*T) for the MoS head. Default 128
     # tokens keeps peak memory well under 1 GiB at tiny1m3m (with
-    # K=4, V=49152, fp32). Increase for fewer kernel launches at the
-    # cost of more peak memory; decrease if you hit OOM on smaller
-    # GPUs. Only consulted when `use_mos=True`.
-    mos_chunk_size: int = 256
+    # K=4, V=49152, fp32). The runner report on round 1 showed K=4
+    # with chunk=256 still OOM'd on the RTX 3060 12GB because the
+    # downstream `F.cross_entropy(logits.view(-1, V), …)` internally
+    # materializes a full (N, V) tensor at fp32 (≈ 3.0 GiB at
+    # tiny1m3m). Halving the chunk size to 128 keeps the per-chunk
+    # peak ~2× smaller; this combined with K=2 in the
+    # `Tiny1M3MMoSConfig` subclass keeps MoS training inside the
+    # 12GB envelope. Increase for fewer kernel launches at the cost
+    # of more peak memory; decrease further if you hit OOM on
+    # smaller GPUs. Only consulted when `use_mos=True`.
+    mos_chunk_size: int = 128
     # #72 Tied QK (PaLM-style): Q and K share the same projection
     # matrix. The merged QK is shape [q_size + kv_size, d_model],
     # output is split into Q (q_size) and K (kv_size). Real arch
@@ -692,6 +699,28 @@ class LLMConfig:
     use_expert_choice_moe: bool = False
     n_moe_experts: int = 4
 
+    # 149 — TTT-Linear (Sun, Yang, et al. 2024, arXiv:2407.04620,
+    # §3.2). Drop-in FFN replacement: the FFN's up-projection is
+    # swapped for `TTTLinear` — a per-input closed-form fast-weight
+    # linear that updates its own weight from the input on the fly
+    # (one Newton-style gradient step on the auto-encoding loss
+    # `||W·x − x||²`). The down-projection stays a standard
+    # `nn.Linear` so the FFN output side is unchanged. Per-input
+    # fast weights act as a capacity multiplier: a 0.94M model with
+    # per-input W_f behaves like a much larger static model in
+    # expectation. The fast path costs O(B·T·out·in) extra FLOPs per
+    # layer. `ttt_lr_init=0.0` (default) zero-inits the per-layer TTT
+    # learning rate so `lr=0` at step 0 ⇒ `TTTLinear` short-circuits
+    # to `F.linear(x, weight, b)` with the same `kaiming_uniform_`
+    # weight as `nn.Linear` ⇒ the FFN is bit-identical to a vanilla
+    # `SquaredReLUFeedForward` at step 0. With `use_ttt_ffn=False`
+    # (default) the `TTTFeedForward` module is never built and the
+    # baseline FFN path is bit-identical. See
+    # `models/ttt_linear.py` and
+    # `autoresearch/ideas/149-ttt-linear/idea.md`.
+    use_ttt_ffn: bool = False
+    ttt_lr_init: float = 0.0
+
     # 109 — KDA channel gate (Kimi Linear, arXiv:2510.26692): per-channel
     # *bounded* diagonal gate on the V stream of each head. KDA replaces
     # the single scalar forget/decay gate in delta-rule attention with a
@@ -820,6 +849,24 @@ class LLMConfig:
     # negligible). See `autoresearch/ideas/116-hyper-connections/idea.md`.
     use_hyper_connections: bool = False
     hc_n_resid: int = 4
+    # 150 — Cross-Layer Feedback Attention (Holtzman et al. 2020,
+    # Feedback Transformer, arXiv:2002.09402; lean "previous K=2 layers"
+    # variant). Each block reads from a small cache of the previous K
+    # blocks' pre-FFN residual states via a `XLayerCrossAttn` head, and
+    # adds the result as a gated residual branch. Per-block scalar
+    # `xlayer_gate = nn.Parameter(torch.zeros(1))` ⇒ contribution is
+    # exactly 0 at step 0 ⇒ baseline forward is bit-identical. K=2 by
+    # default (the spec pin — the spec also lets K=4 / 8 be tested).
+    # The cross-attn head is single-head with `head_dim=16` to keep
+    # params compact at 0.94M: per-block param overhead is
+    # 2·d_model·16 + 2·d_model² = 8.2K at d_model=64, ≈10% of the
+    # 0.94M budget across 12 blocks. With `use_xlayer_feedback=False`
+    # (default) the cross-attn module is never built, the per-block
+    # gate is not allocated, and the baseline path is bit-identical.
+    # See `models/xlayer_attn.py` and
+    # `autoresearch/ideas/150-xlayer-feedback/idea.md`.
+    use_xlayer_feedback: bool = False
+    xlayer_k: int = 2
     # 115 — R-Drop: Regularized Dropout for Neural Networks
     # (Liang et al. 2021, arXiv:2106.14448, NeurIPS 2021). Run the model
     # forward twice per step with different dropout masks, average the two
@@ -4476,7 +4523,7 @@ class Tiny1M3MMoSConfig(Tiny1M3MConfig):
     Bottleneck: A High-Rank RNN Language Model").
 
     A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val 6.4306).
-    Replaces the single output softmax with `n_mos_components=4` parallel
+    Replaces the single output softmax with `n_mos_components=2` parallel
     vocab-sized heads mixed by per-token `π = softmax(W_π · h)`. The
     mixture distribution is
         `P(v) = Σ_k π_k · softmax(W_k · h)[v]`,
@@ -4485,27 +4532,38 @@ class Tiny1M3MMoSConfig(Tiny1M3MConfig):
 
     The structural lever is the *rank* of the output distribution: a
     single `softmax(W·h)` has log-prob matrix rank ≤ d_model = 64, but a
-    K-mixture has effective rank ≤ K·d_model = 256 — exponentially more
+    K-mixture has effective rank ≤ K·d_model = 128 — twice as
     expressive for high-rank next-token targets. The existing output
     head (`d_model × vocab`) is replaced by K fresh vocab-sized heads
     (no tying with token_embedding) plus a small `d_model → K` mix
     projection.
 
+    `n_mos_components=2` (paper default is K=4) — recoded from K=4 in
+    round 2 because K=4 with the chunked-B*T forward still OOM'd on
+    the RTX 3060 12GB. The OOM culprit was the downstream
+    `F.cross_entropy(logits.view(-1, V), …)` materializing a (4096,
+    49152) tensor in fp32 (≈ 3 GiB). Combined with K=4's 3 fresh
+    vocab-sized heads (~37.8M extra params + AdamW state ≈ 450 MB)
+    the trainer process exceeded 12 GB. Halving K cuts the MoS
+    optimizer state to ~150 MB, restoring headroom. The effective
+    rank lever still doubles (`K·d_model = 128 vs 64`), so the A/B is
+    still informative — just at a smaller K.
+
     Identity at step 0 (strict, fp32-exact):
-    - `W_π.weight = 0`, `W_π.bias = [+1e4, -1e4, -1e4, -1e4]` ⇒
-      `softmax(W_π·h) = [1, 0, 0, 0]` exactly (the `exp(-2e4)` terms
-      underflow to 0 in fp32). The `logsumexp` then reduces to
+    - `W_π.weight = 0`, `W_π.bias = [+1e4, -1e4]` ⇒
+      `softmax(W_π·h) = [1, 0]` exactly (the `exp(-2e4)` term
+      underflows to 0 in fp32). The `logsumexp` then reduces to
       `log_softmax(W_0 · h)`, which equals the baseline tied head's
       output logit. So the step-0 val loss is bit-identical to the
-      baseline. The K fresh heads `W_k` are init'd to `N(0, 0.02²)` like
-      the rest of the model; only head 0 contributes at step 0.
+      baseline. The K-1=1 fresh head `W_1` is init'd to `N(0, 0.02²)`
+      like the rest of the model; only head 0 contributes at step 0.
 
-    Cost: K × vocab × d_model = 4 × 49152 × 64 = 12,582,912 extra
+    Cost: K × vocab × d_model = 2 × 49152 × 64 = 6,291,456 extra
     params (the lever's headline param injection), plus K × d_model
-    = 256 for the mix projection. At tiny1m3m the baseline has 0.94M
-    params; MoS treatment has ~13.5M — a sizeable param confound that
-    the paper's win at billion-param scale does NOT control for. The
-    transfer note should flag this when judging the A/B.
+    = 128 for the mix projection. At tiny1m3m the baseline has 0.94M
+    params; MoS treatment has ~7.2M — still a sizeable param confound
+    that the paper's win at billion-param scale does NOT control
+    for. The transfer note should flag this when judging the A/B.
 
     Transfer-risk: med. Paper trains RNN-based 1B+ LMs with K=4
     softmaxes; independent Transformer replications at 100M+ report
@@ -4514,7 +4572,121 @@ class Tiny1M3MMoSConfig(Tiny1M3MConfig):
     DRIFT > +0.01. PASS ≤ −0.01. See `autoresearch/ideas/144-mos/idea.md`.
     """
     use_mos: bool = True
-    n_mos_components: int = 4
+    n_mos_components: int = 2
+
+
+@dataclass
+class Tiny1M3MExpertChoiceConfig(Tiny1M3MConfig):
+    """Tiny1M3M with Expert-Choice MoE FFN replacement
+    (Zhou, Lei, et al. 2022, arXiv:2202.09368,
+    "Mixture-of-Experts with Expert Choice Routing").
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val 6.4306).
+    Replaces the standard dense FFN with `ExpertChoiceMoE` — E parallel
+    full-width FFNs (default E=4) where each expert picks its own
+    top-k tokens (k = ceil(N/E)) instead of each token picking its
+    top-k experts (token-choice MoE). Load balance is by construction:
+    every expert processes exactly k tokens, so NO auxiliary load-
+    balancing loss is required. Router `nn.Linear(d_model, n_experts)`
+    is zero-init ⇒ at step 0 all expert-token scores are 0 ⇒ every
+    expert processes the same set of k tokens with uniform softmax
+    weights ⇒ output ≈ uniform mean of E identically-init'd FFNs
+    (NOT byte-identical to a single FFN at step 0 — documented
+    caveat mirroring 117-soft-moe). Each expert is full-width so the
+    FFN-param cost multiplies by `n_moe_experts` (default 4×).
+
+    With `use_expert_choice_moe=False` (default) the `ExpertChoiceMoE`
+    module is never built and the baseline FFN path is bit-identical.
+    See `models/expert_choice_moe.py` and
+    `autoresearch/ideas/145-expert-choice/idea.md`.
+
+    PASS ≤ ctrl − 0.01. NULL band |Δ| < 0.01. DRIFT > +0.01.
+    """
+    use_expert_choice_moe: bool = True
+    n_moe_experts: int = 4
+
+
+@dataclass
+class Tiny1M3MTTTLinearConfig(Tiny1M3MConfig):
+    """Tiny1M3M with TTT-Linear FFN replacement (Sun, Yang, et al.
+    2024, arXiv:2407.04620, §3.2).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val 6.4306).
+    Replaces the FFN's up-projection with `TTTLinear` — a per-input
+    closed-form fast-weight linear that updates its own weight from
+    the input on the fly via a single Newton-style gradient step on
+    the auto-encoding loss `||W·x − x||²`. The down-projection stays
+    a standard `nn.Linear` so the FFN output side is unchanged.
+
+    Per-input fast weights act as a *capacity multiplier*: the static
+    FFN must encode "what to do with token t" in fixed weights, but
+    TTTLinear gives the model a per-input weight update at the cost
+    of one extra matmul per step. At tiny1m3m (0.94M params, 92
+    update steps) this is a "free" sample-efficiency boost when the
+    model is undertrained.
+
+    Identity at step 0: `ttt_lr_init=0.0` (default) zero-inits the
+    per-layer TTT learning rate so `lr=0` at step 0 ⇒ the
+    `TTTLinear` short-circuits to `F.linear(x, weight, b)` with the
+    same `kaiming_uniform_` weight as `nn.Linear` ⇒ the FFN is bit-
+    identical to a vanilla `SquaredReLUFeedForward` at step 0. With
+    `use_ttt_ffn=False` (default) the `TTTFeedForward` module is
+    never built and the baseline FFN path is bit-identical. See
+    `models/ttt_linear.py` and
+    `autoresearch/ideas/149-ttt-linear/idea.md`.
+
+    PASS ≤ ctrl − 0.01. NULL band |Δ| < 0.01. DRIFT > +0.01.
+    """
+    use_ttt_ffn: bool = True
+    ttt_lr_init: float = 0.0
+
+
+@dataclass
+class Tiny1M3MXLayerFeedbackConfig(Tiny1M3MConfig):
+    """Tiny1M3M with Cross-Layer Feedback Attention
+    (Holtzman et al. 2020, arXiv:2002.09402; lean "previous K=2
+    layers" variant).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val 6.4306).
+    Each block reads from a cache of the previous K=2 blocks' pre-FFN
+    residual states via a small `XLayerCrossAttn` head (1 head,
+    head_dim=16, Q/K dim=16, V=full d_model), and adds the result as
+    a *gated* residual branch. Per-block scalar `xlayer_gate` is init
+    0 ⇒ the contribution is exactly 0 at step 0 ⇒ the forward is
+    bit-identical to the no-feedback baseline.
+
+    The cache is plumbed by the model loop (`MinimalLLM` keeps an
+    `xlayer_mem` list, appends the block's pre-FFN x after each
+    forward, truncates to K). The cross-attn reads from this list
+    (Q from current pre-FFN x, K/V from the previous K pre-FFN
+    states concatenated along the time axis).
+
+    Param overhead: per-block `2·d_model·16 + 2·d_model² ≈ 8.2K` at
+    d_model=64. Across 12 blocks: ~98K params, ≈10.5% of the 0.94M
+    budget. The cross-attn head is intentionally small (1 head × 16
+    dim) to keep the per-block cost tractable; bigger K (4 or 8) is
+    an obvious sweep axis.
+
+    Distinct from value-residual (021, WIN at tiny1m3m, -0.0723):
+    value-residual blends layer-0's V into every later layer's V
+    (a value-only path, no attention, no selection). Cross-Layer
+    Feedback is a *cross-attention* over a window of K layers'
+    hidden states (a selection mechanism, not a linear mixing).
+    Composability: both are *additive* residual branches on the
+    V stream / residual stream respectively, so they could in
+    principle stack.
+
+    Closest null: 116-hyper-connections (mHC). mHC is *linear mixing*
+    of adjacent-layer outputs (no attention, no selection). Cross-
+    Layer Feedback is *attention-weighted* selection from a K=2
+    window. The 116 null at 0.94M raised the bar for the
+    cross-layer-info-flow axis; this is the attention variant.
+
+    PASS ≤ ctrl − 0.01. NULL band |Δ| < 0.01. DRIFT > +0.01. See
+    `autoresearch/ideas/150-xlayer-feedback/idea.md`.
+    """
+    use_xlayer_feedback: bool = True
+    xlayer_k: int = 2
 
 
 # =====================================================================
