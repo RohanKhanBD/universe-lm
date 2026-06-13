@@ -480,6 +480,7 @@ class MultiHeadAttention(nn.Module):
         use_value_channel_gate: bool = False,
         use_attn_output_channel_gate: bool = False,
         use_exclusive_self_attn: bool = False,
+        use_kda_channel_gate: bool = False,
         use_value_embed: bool = False,
         value_embed_rank: int | None = None,
         use_query_embed: bool = False,
@@ -807,6 +808,22 @@ class MultiHeadAttention(nn.Module):
         self.use_exclusive_self_attn = use_exclusive_self_attn
         if self.use_exclusive_self_attn:
             self.exclusive_self_attn = nn.Parameter(torch.zeros(n_heads))
+        # 109 — KDA channel gate: per-(head, channel) *bounded* diagonal
+        # `2·σ(g)` gain on V before the AV product. KDA's
+        # `Γ = diag(γ_1, …, γ_d)` decay, ported to the V stream. Param
+        # shape `(n_heads, d_k)`, zero-init ⇒ `2·σ(0) = 1.0` exactly
+        # ⇒ step-0 ≡ baseline when flag on at step 0, AND when flag
+        # off (no Parameter created, no application site taken). The
+        # closed `use_value_channel_gate` uses the unbounded
+        # `1 + g` form; the bounded `2·σ(g)` parametrization here is
+        # what makes this lever distinct (per-channel gains live in
+        # (0, 2) — bounded during training, prevents drift to
+        # extremes). n_heads × d_k scalars per layer = 64 at
+        # tiny1m3m (H=4, d_k=16). See
+        # `autoresearch/ideas/109-kda-channel-gate/idea.md`.
+        self.use_kda_channel_gate = use_kda_channel_gate
+        if self.use_kda_channel_gate:
+            self.kda_channel_gate = nn.Parameter(torch.zeros(n_heads, self.d_k))
         # 024 — Gated Attention: per-head *scalar* input-conditional
         # sigmoid gate on `o_h = A_h V_h`. `nn.Linear(d_model, n_heads)`,
         # both weight and bias zero-init. At init: `2·σ(0) = 1.0` exactly
@@ -1603,6 +1620,18 @@ class MultiHeadAttention(nn.Module):
             V = self.v_norm(V)
         if self.use_value_channel_gate:
             V = V * (1.0 + self.value_channel_gate.view(1, self.n_heads, 1, self.d_k))
+        # 109 — KDA channel gate: per-(head, channel) bounded `2·σ(g)`
+        # gain on V, applied before the AV product. Sits at the same V
+        # site as the closed `use_value_channel_gate` (which uses the
+        # unbounded `1+g` form), but the bounded parametrization
+        # `(0, 2)` is the difference. Zero-init ⇒ `2·σ(0) = 1.0`
+        # exactly ⇒ V unchanged at step 0. Composes with v_norm and
+        # with the closed unbounded V-gate (multiplicative on the
+        # same tensor); both can be on simultaneously without
+        # interference. KDA's per-channel diagonal decay, ported to
+        # the softmax-attention V stream.
+        if self.use_kda_channel_gate:
+            V = V * (2.0 * torch.sigmoid(self.kda_channel_gate)).view(1, self.n_heads, 1, self.d_k)
 
         # Compute attention
         # #51 sliding-window: when enabled, use a [T, T] causal-local
@@ -1989,6 +2018,7 @@ class TransformerBlock(nn.Module):
         use_value_channel_gate: bool = False,
         use_attn_output_channel_gate: bool = False,
         use_exclusive_self_attn: bool = False,
+        use_kda_channel_gate: bool = False,
         use_talking_heads_out: bool = False,
         out_op: str = "",
         use_layerscale: bool = False,
@@ -2143,6 +2173,7 @@ class TransformerBlock(nn.Module):
             use_value_channel_gate=use_value_channel_gate,
             use_attn_output_channel_gate=use_attn_output_channel_gate,
             use_exclusive_self_attn=use_exclusive_self_attn,
+            use_kda_channel_gate=use_kda_channel_gate,
             use_talking_heads_out=use_talking_heads_out,
             out_op=out_op,
             use_value_embed=use_value_embed,

@@ -1,8 +1,8 @@
 ---
 id: 108-simbal-router
-status: needs-taste
+status: implementing
 round: 1
-updated: 2026-06-13T05:32:00Z
+updated: 2026-06-13T09:21:21Z
 transfer-risk: low
 plain: It tries to make similar inputs pick similar experts instead of bouncing around and wasting capacity.
 ---

@@ -235,6 +235,13 @@ class MinimalLLM(nn.Module):
         # output onto the current token's value vector. Default off →
         # baseline path bit-identical.
         self.use_exclusive_self_attn = getattr(config, "use_exclusive_self_attn", False)
+        # 109 — KDA channel gate: per-(head, channel) bounded diagonal
+        # `2·σ(g)` gain on V before the AV product. KDA's per-channel
+        # `Γ = diag(γ_1, …, γ_d)` decay, ported to softmax attention.
+        # Default off → baseline path bit-identical (no Parameter
+        # created, no application site taken). See
+        # `autoresearch/ideas/109-kda-channel-gate/idea.md`.
+        self.use_kda_channel_gate = getattr(config, "use_kda_channel_gate", False)
         # 025 — Scalable-Softmax (SSMax): per-head learnable scalar
         # s_h that multiplies the attention logits by s_h · log(n)
         # pre-softmax, where n is the per-query causal key count.
@@ -356,6 +363,7 @@ class MinimalLLM(nn.Module):
                     use_value_channel_gate=getattr(config, "use_value_channel_gate", False),
                     use_attn_output_channel_gate=getattr(config, "use_attn_output_channel_gate", False),
                     use_exclusive_self_attn=self.use_exclusive_self_attn,
+                    use_kda_channel_gate=self.use_kda_channel_gate,
                     use_talking_heads_out=getattr(config, "use_talking_heads_out", False),
                     out_op=getattr(config, "out_op", ""),
                     use_re_zero=getattr(config, "use_re_zero", False),

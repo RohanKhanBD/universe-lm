@@ -1,8 +1,8 @@
 ---
 id: 107-exclusive-self-attn
-status: needs-run
+status: done
 round: 1
-updated: 2026-06-13T06:33:47Z
+updated: 2026-06-13T07:37:12Z
 transfer-risk: low
 plain: It tries to make attention stop spending effort on the current word itself so it can use more context.
 ---

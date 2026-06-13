@@ -401,6 +401,26 @@ class LLMConfig:
     # `autoresearch/ideas/024-gated-attention/plan.md`.
     use_gated_attn: bool = False
 
+    # 109 — KDA channel gate (Kimi Linear, arXiv:2510.26692): per-channel
+    # *bounded* diagonal gate on the V stream of each head. KDA replaces
+    # the single scalar forget/decay gate in delta-rule attention with a
+    # per-channel diagonal `Γ = diag(γ_1, …, γ_d)`. In this repo's softmax
+    # attention, the closest analog is a per-(head, channel) gate on V
+    # before the AV product. Parametrized as a *bounded* `2·σ(g)` (not the
+    # unbounded `1+g` of the closed `use_value_channel_gate`) so each
+    # channel can independently amplify or dampen its own value stream
+    # within `(0, 2)`. `g ∈ R^{n_heads × d_k}` zero-init ⇒ `2·σ(0) = 1.0`
+    # exactly at step 0 ⇒ baseline graph bit-identical when the flag is
+    # off AND when the flag is on at step 0. Categorically distinct from
+    # the closed `use_value_channel_gate` (unbounded, can drift to
+    # extremes) and from every active attention-side lever (021-V-residual
+    # is cross-layer V, 022-softpick is the softmax swap, 024-gated-attn
+    # is post-AV o_h gate, 020-FoX is post-softmax A·D). The lever is the
+    # *diagonal* and *bounded* per-channel V gain. Default off → baseline
+    # path bit-identical (no Parameter created, no application site taken).
+    # See `autoresearch/ideas/109-kda-channel-gate/idea.md`.
+    use_kda_channel_gate: bool = False
+
     # ============================================================================
     # Query-tweaks plan (29 experiments, 6 batches). All defaults are
     # identity/zero-init so step-0 == baseline unless the flag is on.
@@ -1127,6 +1147,29 @@ class Tiny1M3MExclusiveSelfAttnConfig(Tiny1M3MConfig):
     so step 0 is the baseline graph.
     """
     use_exclusive_self_attn: bool = True
+
+
+@dataclass
+class Tiny1M3MKDAChannelGateConfig(Tiny1M3MConfig):
+    """Tiny1M3M with KDA per-channel diagonal V-gate (bounded).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`). Replaces the
+    closed unbounded per-(head, channel) V-gate
+    (`use_value_channel_gate`, `1+g` form) with a *bounded* `2·σ(g)` per
+    channel — KDA's `Γ = diag(γ_1, …, γ_d)` diagonal-decay idea,
+    ported to the softmax-attention V stream. `g ∈ R^{n_heads × d_k}`
+    zero-init ⇒ `2·σ(0) = 1.0` exactly at step 0 ⇒ step-0 is the
+    baseline graph. Applied to V before the AV product
+    (orthogonal site to every active attention-side lever; same
+    site as the closed `use_value_channel_gate`, but the bounded
+    parametrization is the difference). Cost: n_heads × d_k = 64
+    scalars per layer × 12 layers = 768 extra params (~0.08%).
+
+    PASS ≤ −0.01 vs the tiny1m3m ctrl. NULL band |Δ| < 0.01.
+    DRIFT > +0.01. See
+    `autoresearch/ideas/109-kda-channel-gate/idea.md`.
+    """
+    use_kda_channel_gate: bool = True
 
 
 @dataclass
