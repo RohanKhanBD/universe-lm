@@ -269,6 +269,9 @@ def main():
     parser.add_argument("--use_nsa_global", type=str, help="NSA-style local + block-compressed global attention, #88 (true/false)")
     parser.add_argument("--nsa_block", type=int, help="Block size for NSA compressed-global pooling, #88 (default 64)")
     parser.add_argument("--use_hybrid_heads", type=str, help="Half heads local / half global, every layer, #89 (true/false)")
+    parser.add_argument("--use_lookahead", type=str, help="Lookahead optimizer wrapper (k inner steps, 1 outer), #112 (true/false)")
+    parser.add_argument("--lookahead_k", type=int, help="Lookahead inner cycle length, #112 (default 5)")
+    parser.add_argument("--lookahead_alpha", type=float, help="Lookahead slow step size, #112 (default 0.5)")
     parser.add_argument("--d_ff", type=int, help="Override FFN hidden dim (for param-matched comparisons)")
     parser.add_argument("--output_dir", type=str, default="./checkpoints", help="Output directory")
     parser.add_argument(
@@ -399,6 +402,12 @@ def main():
         config.nsa_block = args.nsa_block
     if args.use_hybrid_heads is not None:
         config.use_hybrid_heads = (args.use_hybrid_heads.lower() == "true")
+    if args.use_lookahead is not None:
+        config.use_lookahead = (args.use_lookahead.lower() == "true")
+    if args.lookahead_k is not None:
+        config.lookahead_k = args.lookahead_k
+    if args.lookahead_alpha is not None:
+        config.lookahead_alpha = args.lookahead_alpha
     if args.d_ff is not None:
         config.d_ff = args.d_ff
     if args.norm_type is not None:

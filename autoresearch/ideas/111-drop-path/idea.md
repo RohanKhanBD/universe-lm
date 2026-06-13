@@ -1,8 +1,8 @@
 ---
 id: 111-drop-path
-status: running
+status: done
 round: 1
-updated: 2026-06-13T10:04:38Z
+updated: 2026-06-13T10:26:26Z
 transfer-risk: low
 plain: It tries to randomly skip whole transformer blocks during training so the model can't lean on any single layer and has to spread the work.
 ---

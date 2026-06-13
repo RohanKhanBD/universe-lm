@@ -91,6 +91,70 @@ def default_metrics_history() -> Dict[str, list]:
     }
 
 
+class Lookahead:
+    """Lookahead Optimizer Wrapper (Zhang et al. 2019, arXiv:1907.08610).
+
+    Maintains a "slow" EMA copy of the model parameters alongside the
+    live "fast" weights. Every `k` inner optimizer steps, pulls slow
+    halfway toward fast (`slow ← slow + α·(fast − slow)`) and resets
+    fast to slow. The inner optimizer's state dict (momentum buffers,
+    AdamW exp_avg/exp_avg_sq, Muon momentum_buffer) is cleared at the
+    outer step so the next inner step doesn't see stale gradients
+    from before the slow reset — otherwise the next inner step would
+    overshoot.
+
+    Identity at step 0: `slow = θ_init`, first inner step uses the
+    baseline Muon/AdamW path. The lookahead sync only fires at step
+    `k`; before that the wrapper is a no-op.
+
+    Args:
+        optimizers: list of inner optimizers (e.g. [Muon, AdamW]).
+        model: the model whose parameters to track.
+        k: inner cycle length (paper default 5-10).
+        alpha: slow step size (paper default 0.5).
+    """
+
+    def __init__(self, optimizers, model, k, alpha):
+        self.optimizers = optimizers
+        self.model = model
+        self.k = k
+        self.alpha = alpha
+        self.step_count = 0
+        # Snapshot of initial slow weights (clones of fast at wrap time)
+        self.slow = {
+            n: p.detach().clone()
+            for n, p in model.named_parameters()
+            if p.requires_grad
+        }
+
+    def step(self):
+        # 1. Let the inner optimizers do their normal update
+        for opt in self.optimizers:
+            opt.step()
+        self.step_count += 1
+        # 2. Outer step: every k inner steps, sync fast to slow
+        if self.step_count % self.k == 0:
+            with torch.no_grad():
+                for n, p in self.model.named_parameters():
+                    if not p.requires_grad or n not in self.slow:
+                        continue
+                    # slow <- slow + alpha * (fast - slow)
+                    self.slow[n].add_(p.detach() - self.slow[n], alpha=self.alpha)
+                    # fast <- slow
+                    p.data.copy_(self.slow[n])
+            # 3. Clear inner optimizer state to avoid stale momentum
+            #    carrying across the slow reset. Each inner optimizer's
+            #    `state` is a defaultdict — `.clear()` keeps the type
+            #    but drops every entry.
+            for opt in self.optimizers:
+                if hasattr(opt, "state") and opt.state is not None:
+                    opt.state.clear()
+
+    def zero_grad(self):
+        for opt in self.optimizers:
+            opt.zero_grad()
+
+
 def setup_muon_optimizer(model: nn.Module, config: LLMConfig):
     """Setup Muon optimizer with hybrid approach"""
     muon_params = []
@@ -332,6 +396,7 @@ def train_model(
     output_dir: Optional[str] = None,
     extra_config: Optional[Dict[str, Any]] = None,
     log_every: int = 100,
+    lookahead: Optional["Lookahead"] = None,
 ) -> Any:
     """
     Generic training function that can be used by experiments.
@@ -593,6 +658,11 @@ def train_model(
                 for optimizer in optimizers:
                     optimizer.step()
                     optimizer.zero_grad()
+                # 112 — Lookahead outer step. Fires every k inner steps;
+                # inert when use_lookahead=False. Operates on the live
+                # `model` so the next forward sees the slow-pulled weights.
+                if lookahead is not None:
+                    lookahead.step()
                 for scheduler in schedulers:
                     scheduler.step()
 
@@ -1033,6 +1103,22 @@ def train_minimal_llm(
             scheduler.load_state_dict(state_dict)
         restore_rng_state(checkpoint_payload.get("rng_state"))
 
+    # 112 — Lookahead Optimizer Wrapper. Sits OUTSIDE the per-step inner
+    # optimizers and only fires every `lookahead_k` inner steps. With
+    # use_lookahead=False (default) the wrapper is None → fully inert,
+    # baseline path bit-identical. The wrapper's `slow` snapshot is taken
+    # AFTER any checkpoint load so the slow weights match the live
+    # model state at the start of this run.
+    lookahead = None
+    if getattr(config, "use_lookahead", False):
+        lookahead = Lookahead(
+            optimizers=optimizers,
+            model=model,
+            k=int(getattr(config, "lookahead_k", 5)),
+            alpha=float(getattr(config, "lookahead_alpha", 0.5)),
+        )
+        print(f"  🔭 Lookahead wrapper active: k={lookahead.k}, α={lookahead.alpha}")
+
     # ============================================
     # 8. Reset RNG for reproducible training
     # ============================================
@@ -1063,6 +1149,7 @@ def train_minimal_llm(
         output_dir=output_dir,
         extra_config=None,
         log_every=getattr(config, 'log_every', 100),
+        lookahead=lookahead,
     )
     
     total_training_time = results['training_time']

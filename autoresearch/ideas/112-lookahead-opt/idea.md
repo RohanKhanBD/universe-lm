@@ -1,8 +1,8 @@
 ---
 id: 112-lookahead-opt
-status: needs-taste
+status: running
 round: 1
-updated: 2026-06-13T08:00:00Z
+updated: 2026-06-13T10:31:25Z
 transfer-risk: med
 plain: It tries to slow the optimizer down by taking a few fast steps in one direction and then averaging back, so the model doesn't overshoot in any one step.
 ---
@@ -87,3 +87,44 @@ sits outside. A null would say "trajectory averaging at this step
 count and depth is too coarse to help"; a win would compound with
 existing WINS and open a new axis (trajectory-level wrappers) for
 the portfolio.
+
+## Plan
+
+**Files touched**
+- `configs/llm_config.py`: add `use_lookahead: bool = False`,
+  `lookahead_k: int = 5`, `lookahead_alpha: float = 0.5` to `LLMConfig`.
+  Add `Tiny1M3MLookaheadConfig(Tiny1M3MConfig)` that sets
+  `use_lookahead=True` and keeps the paper defaults k=5, α=0.5.
+- `training/trainer.py`: add `Lookahead` wrapper class. Wire it
+  into `train_minimal_llm` (constructed after checkpoint load so the
+  slow snapshot matches the live model state) and pass it as
+  `lookahead=` into `train_model`. In `train_model`, call
+  `lookahead.step()` right after the inner optimizer loop. With
+  `use_lookahead=False` the wrapper is `None` → fully inert.
+- `train_llm.py`: add `--use_lookahead`, `--lookahead_k`,
+  `--lookahead_alpha` CLI flags + override block.
+
+**Zero-init at step 0**: `Lookahead.__init__` snapshots `slow =
+θ_init` clones; the outer-step sync only fires every `k` inner steps,
+so the first `k-1` training steps are pure baseline (Muon/AdamW). The
+final val loss is read from `plots/metrics_<timestamp>.json` /
+`metrics.json` (the same way other experiments in this repo are
+read).
+
+**Run command** (tiny1m3m seed 42):
+```
+cd /root/universe-lm && /venv/main/bin/python train_llm.py \
+  --config_class configs.llm_config.Tiny1M3MLookaheadConfig \
+  --output_dir runs/112-lookahead-opt/seed42 \
+  --seed 42
+```
+Mirror with `Tiny1M3MConfig` (no flag) for the ctrl.
+
+**LoC budget**: ~70 LoC (Lookahead class ~50 + config flag block ~5 +
+config class ~12 + CLI overrides ~10). Well under 200.
+
+**PASS bar**: ≤ ctrl − 0.005 on val_loss (taste's mid-band for a
+trajectory-smoothing wrapper at 12L depth). NULL band |Δ| < 0.005.
+DRIFT > +0.005. ctrl_val baseline 6.4306 (Tiny1M3MConfig,
+`LEADERBOARD.md` row 14) — interpreted against the in-session ctrl
+run to avoid cross-session drift. Seed 42 only.

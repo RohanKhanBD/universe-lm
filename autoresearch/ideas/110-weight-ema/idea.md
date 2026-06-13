@@ -1,8 +1,8 @@
 ---
 id: 110-weight-ema
-status: needs-taste
+status: implementing
 round: 1
-updated: 2026-06-13T08:00:00Z
+updated: 2026-06-13T09:54:45Z
 transfer-risk: low
 plain: It tries to average the model's weights over training so the version it scores on is the calm middle of the noise, not the latest jittery step.
 ---
