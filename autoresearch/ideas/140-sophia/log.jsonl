@@ -16,3 +16,4 @@
 {"ts":"2026-06-14T02:20:37Z","agent":"reviewer","idea":"140-sophia","from":"reviewing","to":"needs-revision","round":2,"note":"verdict: revise — needs (a) quantified pass/fail bar in plan, (b) adamw_params scope fix at trainer.py:1746"}
 {"ts":"2026-06-14T04:32:13Z","agent":"reviser","idea":"140-sophia","from":"needs-revision","to":"revising","round":2,"note":"claimed"}
 {"ts":"2026-06-14T04:33:52Z","agent":"reviser","idea":"140-sophia","from":"revising","to":"needs-review","round":3,"note":"applied 2 findings"}
+{"ts":"2026-06-14T04:46:55Z","agent":"reviewer","idea":"140-sophia","from":"needs-review","to":"reviewing","round":3,"note":"claimed: r3 review of post-r2-recode spec"}
