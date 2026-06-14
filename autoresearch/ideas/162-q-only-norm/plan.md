@@ -45,10 +45,16 @@
 
 Step-0 identity (flag OFF): no `q_only_norm` module is registered,
 no branch is taken, baseline path bit-identical. Verified locally:
-`MinimalLLM(Tiny1M3MConfig())` ≡ `MinimalLLM(Tiny1M3MConfig())` to 0.0
-max-abs-diff on a 16-token forward at seed 42 (the flag-off path is
-literally the existing 016 baseline with the unused-knob still set
-False — no extra state).
+`MinimalLLM(Tiny1M3MConfig())` ≡ `MinimalLLM(Tiny1M3MConfig())` to
+**max-abs-diff 0.0** on a 16-token forward at seed 42 (the flag-off
+path is literally the existing 016 baseline with the unused-knob
+still set False — no extra state).
+
+CPU build-smoke (the daemon's `MinimalLLM(C())` check):
+- `MinimalLLM(Tiny1M3MConfig())` → 949,056 params ✓
+- `MinimalLLM(Tiny1M3MQOnlyNormConfig())` → 949,248 params ✓
+- Delta = +192 (one `nn.RMSNorm(d_k=16)` weight per block × 12
+  blocks; bias is `None` by default — `nn.RMSNorm` has no bias).
 
 Step-0 identity (flag ON): the new `q_only_norm` `nn.RMSNorm`
 parameter consumes RNG state during model construction, AND at the
