@@ -1,8 +1,8 @@
 ---
 id: 159-emb-layernorm
-status: needs-recode
+status: implementing
 round: 1
-updated: 2026-06-14T04:36:16Z
+updated: 2026-06-14T04:45:00Z
 transfer-risk: low
 plain: Normalize the token embeddings once at the very start of the model so every layer sees inputs on a consistent scale — a tiny change that several large models use but our closed norm zoo didn't test.
 ---
