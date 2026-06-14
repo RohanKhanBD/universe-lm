@@ -44,8 +44,8 @@ A win would tell us the *post-attention* magnitude axis is the binding constrain
 - **LoC budget**: ~12 LoC across the three files (well under the 200 LoC cap).
 - **Run command** (after code lands + sync to box):
   ```
-  cd /root/universe-lm && /venv/main/bin/python train.py --config_class configs.llm_config.Tiny1M3MHeadGainConfig --seed 42 --steps 3000
+  cd /root/universe-lm && /venv/main/bin/python train_llm.py --config_class __main__.C --seed 42 --dataset_path processed_data/pretrain_1B --warmup false
   ```
-  The runner picks this up from `autoresearch/bin/orchestrate.sh` once the idea is in `needs-run`.
+  via `_arq_160-rms-gain-per-head.py` (`class C(Tiny1M3MHeadGainConfig): pass`). The runner picks this up from `autoresearch/bin/orchestrate.sh` once the idea is in `needs-run`.
 - **Read final val loss** from the JSONL the trainer emits (`val_loss` in the last line). Compare against `Tiny1M3MConfig` baseline val 6.4306 (per `autoresearch/baseline-cache.json`).
 - **Prediction**: small wash or marginal win (|Δ| < 0.01) — the *post*-AV magnitude axis is a redundant degree of freedom given the W_O projection that follows, but heads can still learn to attenuate noise. PASS ≤ ctrl − 0.005, NULL band |Δ| < 0.005, DRIFT > +0.005.
