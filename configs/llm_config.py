@@ -549,6 +549,13 @@ class LLMConfig:
     # residual, instead of running sequentially.
     use_multiscale_heads: bool = False
     use_parallel_block: bool = False
+    # 162 — Q-Only RMSNorm (asymmetric QK pre-softmax normalization). Apply
+    # RMSNorm to Q only, leave K raw. nn.RMSNorm weight=1, bias=0 init
+    # ⇒ step-0 ≡ RMSNorm-rescaled Q (spec-allowed fp32 max-abs-diff < 1e-3
+    # tolerance, same trade-off as 159-emb-layernorm). Default off ⇒ no
+    # module built, baseline path bit-identical. See
+    # autoresearch/ideas/162-q-only-norm/idea.md.
+    use_q_only_norm: bool = False
     # #99 Attention sink slot (softmax-off-by-one): append a zero K/V the query
     # can attend to, so it isn't forced to dump probability on a real token.
     use_attn_sink: bool = False
@@ -5212,3 +5219,66 @@ class Tiny1M3MGAUConfig(Tiny1M3MConfig):
     `autoresearch/ideas/158-gau/idea.md`.
     """
     use_gau: bool = True
+
+
+@dataclass
+class Tiny1M3MQOnlyNormConfig(Tiny1M3MConfig):
+    """Tiny1M3M with Q-only RMSNorm (162 — asymmetric QK pre-softmax).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`). Apply
+    `nn.RMSNorm(d_head, eps=1e-6)` to Q only, leave K untouched, before
+    the QK matmul. nn.RMSNorm weight=1, bias=0 init ⇒ at step 0 the
+    lever rescales Q to unit RMS per head-dim (spec-allowed fp32
+    max-abs-diff < 1e-3 tolerance, same trade-off as 159-emb-layernorm).
+    Default off ⇒ baseline path bit-identical (no `q_only_norm`
+    module is registered, no forward branch taken).
+
+    The orthogonal ablation to 016-qk-norm (which norms BOTH Q and K).
+    Sharp 3-way test (with the K-only and QK-symmetric levers):
+    WIN ⇒ Q-side normalization is the binding axis; NULL ⇒ K-side
+    or symmetry was carrying 016's gain. Either outcome closes the
+    QK-norm-attribution axis at 0.94M.
+
+    Transfer-risk: low (RMSNorm family production-validated at LLaMA 3
+    / Qwen 2.5 / Mistral 1B+; Cohere Command-R validates asymmetric QK
+    at 35B+). See `autoresearch/ideas/162-q-only-norm/idea.md`.
+
+    @dataclass-decorated so `use_q_only_norm` default is properly
+    overridden (the dataclass-inheritance pitfall documented in
+    `_arq_161-dyt-temp.py`).
+    """
+    use_q_only_norm: bool = True
+
+
+@dataclass
+class Tiny1M3MQCarryConfig(Tiny1M3MConfig):
+    """Tiny1M3M with Cross-Block Q Residual ("Q-Carry", 164).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val 6.4306).
+    For each block l >= 1, augment the Q projection with a learnable
+    α_l-scaled carry from the previous block's MHA sublayer input
+    (LN(x_{l-1}), `.detach()`-ed):
+        `Q_l = W_Q(x_l) + α_l · W_Q(prev_x)`,
+    where `α_l = nn.Parameter(torch.zeros(()))` is a per-block 0-dim
+    scalar (init 0 ⇒ step-0 forward is bit-identical to no-carry
+    baseline within fp32 rounding noise of one extra multiply-add).
+    The stash is set on layer 0 (no previous block exists) and read
+    back by the model loop for layers 1..N-1.
+
+    Q-side dual of 021-value-residual (which carries V): tests
+    whether 021's WIN was V-specific or generalizes to "cross-block
+    residual-stream mixing." K, V, O projections are unchanged; the
+    carry is added before q_norm / RoPE so 016 and 162 still
+    rescale `Q + α·Q_carry` consistently. The Q projection of
+    `q_carry` uses the SAME W_Q slice that produced the current Q
+    (default/shared_kv/MLA: `qkvo_proj[:q_size]`; tied-QK:
+    `qk_proj[:q_size]`).
+
+    Cost: 12 scalars total (one per block, +0.001% of 0.94M). FLOPs:
+    +1 W_Q matmul per block, ~+11% per-step at tiny1m3m.
+
+    @dataclass-decorated so `use_q_carry` default is properly
+    overridden (the dataclass-inheritance pitfall documented in
+    `_arq_161-dyt-temp.py`).
+    """
+    use_q_carry: bool = True

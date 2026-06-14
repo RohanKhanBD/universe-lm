@@ -421,6 +421,9 @@ class MinimalLLM(nn.Module):
         self.norm_type = getattr(config, "norm_type", "rmsnorm")
         self.qk_norm_type = getattr(config, "qk_norm_type", "rmsnorm")
         self.v_norm_type = getattr(config, "v_norm_type", "")
+        # 162 — Q-Only RMSNorm (asymmetric QK pre-softmax). See
+        # autoresearch/ideas/162-q-only-norm/idea.md.
+        self.use_q_only_norm = getattr(config, "use_q_only_norm", False)
         # #16 QK-Norm (Dehghani et al. 2023, ViT-22B, arXiv:2302.05442):
         # when True, override the Q/K norm from RMSNorm to LayerNorm,
         # bounding the per-head logit. Default off → bit-identical
@@ -655,6 +658,7 @@ class MinimalLLM(nn.Module):
                         v_norm_type=self.v_norm_type,
                         use_qk_layernorm=self.use_qk_layernorm,
                         use_v_layernorm=self.use_v_layernorm,
+                        use_q_only_norm=self.use_q_only_norm,
                         use_multiscale_heads=self.use_multiscale_heads,
                         use_parallel_block=self.use_parallel_block,
                         use_attn_sink=self.use_attn_sink,
@@ -899,6 +903,8 @@ class MinimalLLM(nn.Module):
                         use_qk_layernorm=self.use_qk_layernorm,
                         # 029 — V-Norm pass-through to the block.
                         use_v_layernorm=self.use_v_layernorm,
+                        # 162 — Q-Only RMSNorm pass-through to the block.
+                        use_q_only_norm=self.use_q_only_norm,
                         use_multiscale_heads=self.use_multiscale_heads,
                         use_parallel_block=self.use_parallel_block,
                         use_attn_sink=self.use_attn_sink,

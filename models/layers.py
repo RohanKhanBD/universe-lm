@@ -814,6 +814,15 @@ class MultiHeadAttention(nn.Module):
         # module is built; baseline path bit-identical. See
         # autoresearch/ideas/029-v-norm/plan.md.
         use_v_layernorm: bool = False,
+        # 162 — Q-Only RMSNorm (asymmetric QK pre-softmax). Apply
+        # `nn.RMSNorm(d_head, eps=1e-6)` to Q only, leave K untouched.
+        # nn.RMSNorm weight=1, bias=0 init ⇒ at step 0 the lever
+        # rescales Q to unit RMS per head-dim (spec-allowed fp32
+        # max-abs-diff < 1e-3 tolerance). Default off ⇒ no module is
+        # built, baseline path bit-identical. Distinct from 016 (which
+        # norms BOTH Q and K). See
+        # autoresearch/ideas/162-q-only-norm/idea.md.
+        use_q_only_norm: bool = False,
         use_multiscale_heads: bool = False,
         use_parallel_block: bool = False,
         use_attn_sink: bool = False,
@@ -991,6 +1000,17 @@ class MultiHeadAttention(nn.Module):
         _qk_use_ln = bool(self.use_layernorm) or bool(use_qk_layernorm)
         self.q_norm = make_norm(self.d_k, qk_norm_type, _qk_use_ln)
         self.k_norm = make_norm(self.d_k, qk_norm_type, _qk_use_ln)
+        # 162 — Q-Only RMSNorm (asymmetric QK pre-softmax). Separate
+        # `nn.RMSNorm(d_head, eps=1e-6)` on Q only; K stays raw. nn.RMSNorm
+        # weight=1, bias=0 init ⇒ at step 0 the lever rescales Q to unit
+        # RMS per head-dim (not byte-identical to no-norm; spec-allowed
+        # fp32 max-abs-diff < 1e-3 tolerance, same trade-off as 159-emb-
+        # layernorm). Default off ⇒ no module is registered, no branch
+        # is taken, baseline path bit-identical. See
+        # autoresearch/ideas/162-q-only-norm/idea.md.
+        self.use_q_only_norm = use_q_only_norm
+        if use_q_only_norm:
+            self.q_only_norm = nn.RMSNorm(self.d_k, eps=1e-6)
         # #92 Robust V-norm: optionally normalize V (per head) before the
         # softmax-weighted sum, so outlier value channels don't dominate the
         # aggregated output. Off by default ("" / "none").
@@ -1870,6 +1890,30 @@ class MultiHeadAttention(nn.Module):
                 Q, K, V = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         # ================================================
 
+        # 164 — Q-Carry: add a learnable cross-block Q carry from
+        # the previous block's MHA sublayer input. Site is post-QKV
+        # split (Q is shape `[B, T, q_size]`), pre-RoPE / pre-q_norm
+        # / pre-q_only_norm so the existing norm/RoPE still rescales
+        # Q + α·Q_carry consistently. `q_carry` is the previous
+        # block's MHA sublayer input, `.detach()`-ed by the model
+        # loop — the carry's gradient is structurally bounded to
+        # `alpha_q`'s 0-dim scalar. Projection uses the SAME W_Q
+        # slice that produced the current Q (so the carry tracks
+        # the W_Q the layer is training, not a fresh one): the
+        # standard `qkvo_proj[:q_size]` in the default / shared_kv
+        # / MLA branches, the `qk_proj[:q_size]` slice in the
+        # tied-QK branch (where W_Q == W_K). α_l=0 init ⇒
+        # `α_l · W_Q(prev_x) = 0` exactly in fp32 ⇒ step-0 is
+        # bit-identical to baseline (within fp32 rounding noise of
+        # one extra multiply-add). See
+        # `autoresearch/ideas/164-q-carry/plan.md`.
+        if self.use_q_carry and q_carry is not None:
+            if self.use_tied_qk:
+                q_carry_w = self.qk_proj[:self.q_size]
+            else:
+                q_carry_w = self.qkvo_proj[:self.q_size]
+            Q = Q + self.alpha_q * F.linear(q_carry, q_carry_w)
+
         # 134 — Mega EMA on V (Ma et al. 2022, arXiv:2209.10655).
         # The V stream is concatenated with `V_ema = W_V @ u` where
         # `u_t = β·u_{t-1} + (1-β)·x_t` is a causal EMA over the input
@@ -1993,14 +2037,30 @@ class MultiHeadAttention(nn.Module):
             # RMSNorm still runs (it's a Q/K magnitude stabilizer,
             # separate concern from position), but the rotation is
             # bypassed.
-            Q = self.q_norm(Q)
-            K = self.k_norm(K)
+            # 162 — Q-only norm branch: when on, apply RMSNorm to Q
+            # only via the dedicated `q_only_norm` module and leave K
+            # untouched (no `k_norm` call). Overrides the symmetric
+            # QK-norm path above; the standard `q_norm`/`k_norm`
+            # modules are NOT used here (the lever has its own module).
+            if self.use_q_only_norm:
+                Q = self.q_only_norm(Q)
+            else:
+                Q = self.q_norm(Q)
+                K = self.k_norm(K)
         elif self.use_qk_norm_post_rope:
-            Q = self.q_norm(self.rotary(Q))
-            K = self.k_norm(self.rotary(K))
+            if self.use_q_only_norm:
+                Q = self.q_only_norm(self.rotary(Q))
+                K = self.rotary(K)
+            else:
+                Q = self.q_norm(self.rotary(Q))
+                K = self.k_norm(self.rotary(K))
         else:
-            Q = self.rotary(self.q_norm(Q))
-            K = self.rotary(self.k_norm(K))
+            if self.use_q_only_norm:
+                Q = self.rotary(self.q_only_norm(Q))
+                K = self.rotary(K)
+            else:
+                Q = self.rotary(self.q_norm(Q))
+                K = self.rotary(self.k_norm(K))
         # #37 per-head Q-gain: multiply Q by (1 + q_gain) per head after
         # RoPE. Zero-init, so step 0 == baseline.
         if self.use_q_gain:
@@ -2294,11 +2354,19 @@ class MultiHeadAttention(nn.Module):
                 B, T, E - 1, self.n_kv_heads, self.d_k,
             )
             if self.use_nope or self.use_cope:
-                extra_K_4d = self.k_norm(extra_K_4d)
+                # 162 — Q-only norm: skip k_norm on extra K too (K stays raw).
+                if not self.use_q_only_norm:
+                    extra_K_4d = self.k_norm(extra_K_4d)
             elif self.use_qk_norm_post_rope:
-                extra_K_4d = self.k_norm(self.rotary(extra_K_4d))
+                if self.use_q_only_norm:
+                    extra_K_4d = self.rotary(extra_K_4d)
+                else:
+                    extra_K_4d = self.k_norm(self.rotary(extra_K_4d))
             else:
-                extra_K_4d = self.rotary(self.k_norm(extra_K_4d))
+                if self.use_q_only_norm:
+                    extra_K_4d = self.rotary(extra_K_4d)
+                else:
+                    extra_K_4d = self.rotary(self.k_norm(extra_K_4d))
             extra_K_pre = extra_K_4d.reshape(
                 B, T, E - 1, self.n_kv_heads, self.d_k,
             )
@@ -2893,6 +2961,11 @@ class TransformerBlock(nn.Module):
         # mechanism description. Default off → V stays unnormalized,
         # baseline path is bit-identical.
         use_v_layernorm: bool = False,
+        # 162 — Q-Only RMSNorm (asymmetric QK pre-softmax). Pass-through
+        # to the inner MHA. See `MultiHeadAttention.use_q_only_norm` for
+        # the mechanism. Default off → baseline path bit-identical.
+        # See autoresearch/ideas/162-q-only-norm/idea.md.
+        use_q_only_norm: bool = False,
         use_multiscale_heads: bool = False,
         use_parallel_block: bool = False,
         use_attn_sink: bool = False,
@@ -3264,6 +3337,9 @@ class TransformerBlock(nn.Module):
             # 029 — V-Norm pass-through: when set, MHA builds a per-head
             # `nn.LayerNorm(d_k)` on V — see MultiHeadAttention.use_v_layernorm.
             use_v_layernorm=use_v_layernorm,
+            # 162 — Q-Only RMSNorm pass-through: when set, MHA builds a
+            # per-head `nn.RMSNorm(d_k)` on Q only — see MultiHeadAttention.use_q_only_norm.
+            use_q_only_norm=use_q_only_norm,
             # Query-tweaks pass-through.
             q_norm_type=q_norm_type,
             use_alibi_bias=use_alibi_bias,
