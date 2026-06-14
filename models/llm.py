@@ -316,6 +316,12 @@ class MinimalLLM(nn.Module):
         # on each MHA; step-0 ≡ baseline. Default off → baseline path
         # bit-identical. See `autoresearch/ideas/021-value-residual/plan.md`.
         self.use_value_residual = getattr(config, "use_value_residual", False)
+        # 163 — Post-Attention V-Mix Depthwise Conv (Hyena-style
+        # residual conv on V before the O projection). Default off
+        # → baseline path bit-identical. See
+        # `autoresearch/ideas/163-v-mix-conv/idea.md`.
+        self.use_v_mix_conv = getattr(config, "use_v_mix_conv", False)
+        self.v_mix_conv_kernel = getattr(config, "v_mix_conv_kernel", 3)
         # 117 — Soft MoE (Puigcerver et al. 2024): when True, the
         # block's FFN is replaced with `SoftMoEFFN` (E parallel
         # narrower FFNs + softmax dispatch/combine). Default off →
@@ -613,6 +619,12 @@ class MinimalLLM(nn.Module):
                         use_short_conv=self.use_short_conv,
                         short_conv_kernel=self.short_conv_kernel,
                         use_value_residual=self.use_value_residual,
+                        # 163 — Post-Attention V-Mix Depthwise Conv
+                        # pass-through. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/163-v-mix-conv/idea.md`.
+                        use_v_mix_conv=self.use_v_mix_conv,
+                        v_mix_conv_kernel=self.v_mix_conv_kernel,
                         use_drop_path=getattr(config, "use_drop_path", False),
                         drop_path_max=getattr(config, "drop_path_max", 0.1),
                         use_soft_moe=self.use_soft_moe,
@@ -849,6 +861,12 @@ class MinimalLLM(nn.Module):
                         use_short_conv=self.use_short_conv,
                         short_conv_kernel=self.short_conv_kernel,
                         use_value_residual=self.use_value_residual,
+                        # 163 — Post-Attention V-Mix Depthwise Conv
+                        # pass-through. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/163-v-mix-conv/idea.md`.
+                        use_v_mix_conv=self.use_v_mix_conv,
+                        v_mix_conv_kernel=self.v_mix_conv_kernel,
                         # 117 — Soft MoE pass-through to the block.
                         use_soft_moe=self.use_soft_moe,
                         soft_moe_n_experts=self.soft_moe_n_experts,

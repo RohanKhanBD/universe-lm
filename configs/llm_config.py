@@ -261,6 +261,25 @@ class LLMConfig:
     # with k=3, +0.25%). See `autoresearch/ideas/157-conv-ffn/idea.md`.
     use_conv_ffn: bool = False
     conv_ffn_kernel: int = 3
+    # 163 — Post-Attention V-Mix Depthwise Convolution (Poli et al.
+    # "Hyena", 2023, arXiv:2302.10866). After the attention output
+    # is computed (post-SDPA, post-reshape [B,T,H,D]→[B,T,d_model],
+    # pre-W_O projection), apply a symmetric depthwise Conv1d on the
+    # time axis over the post-attention tensor. Conv weights are
+    # built as raw `nn.Parameter(zeros(d_model, 1, k))` with center
+    # tap = 1.0 set inline ⇒ the conv is a strict identity at step 0.
+    # Padding = k//2 symmetric (causal+future) — the attention
+    # sublayer has already integrated the full causal context, so the
+    # conv may look at both neighbors. `v_mix_conv_kernel` defaults to
+    # 3 (spec pin); valid range is odd integers ≥ 3. Third axis of
+    # the 3-axis locality test (143-shortconv pre-attn, 157-conv-ffn
+    # post-FFN, 163-v-mix-conv post-attention on V). Default off →
+    # baseline path bit-identical (no Parameter registered, no
+    # forward branch taken). Cost: n_layers × k × d_model extra
+    # params (12 × 3 × 64 = 2,304 at tiny1m3m, +0.25%). See
+    # `autoresearch/ideas/163-v-mix-conv/idea.md`.
+    use_v_mix_conv: bool = False
+    v_mix_conv_kernel: int = 3
     # #49 QK-norm-post-RoPE: apply RMSNorm to Q,K AFTER RoPE (modded-
     # nanogpt variant) instead of the default BEFORE RoPE. Flag-only,
     # no extra params. The post-RoPE norm constrains post-RoPE Q,K
@@ -1928,6 +1947,46 @@ class Tiny1M3MConvFFNConfig(Tiny1M3MConfig):
     """
     use_conv_ffn: bool = True
     conv_ffn_kernel: int = 3
+
+
+@dataclass
+class Tiny1M3MVMixConvConfig(Tiny1M3MConfig):
+    """Tiny1M3M with post-attention V-mix depthwise conv (163).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`). Each
+    block's MHA applies a symmetric depthwise Conv1d to the
+    post-attention tensor `[B, T, d_model]` BEFORE the W_O output
+    projection (post-SDPA, post-reshape, pre-W_O). Conv weights are
+    identity-initialized (center tap = 1, rest = 0) via a raw
+    `nn.Parameter(zeros(d_model, 1, k))` with the center-tap set
+    inline, so the conv is a strict identity at step 0 ⇒ the
+    block's attention output is bit-identical to baseline at step 0
+    (within fp32 rounding noise of the conv arithmetic).
+
+    Third axis of a deliberate 3-axis locality test: 143-shortconv
+    (pre-attention, closed borderline-WIN-rule), 157-conv-ffn
+    (post-FFN-activation, closed null), 163-v-mix-conv
+    (post-attention on V, this one). A WIN would localize the
+    locality prior to the post-softmax V axis; a NULL closes the
+    post-attention locality axis at 0.94M alongside the closed
+    pre-attention and post-FFN axes. Both outcomes are informative.
+
+    From Poli et al. "Hyena" (2023, arXiv:2302.10866) — the
+    Striped Hyena 7B published architecture uses gated convolutions
+    on V before the O projection; the lever is the *residual*
+    post-attn V-conv form (not the full Hyena replacement).
+    `v_mix_conv_kernel` defaults to 3 (spec pin); valid range is
+    odd integers ≥ 3. Default off → baseline path bit-identical.
+
+    @dataclass-decorated so `use_v_mix_conv`/`v_mix_conv_kernel` defaults
+    are properly overridden (the dataclass-inheritance pitfall
+    documented in `_arq_161-dyt-temp.py`).
+
+    NULL band |Δ| ≤ 0.01. DRIFT > +0.01. PASS ≤ −0.01. See
+    `autoresearch/ideas/163-v-mix-conv/idea.md`.
+    """
+    use_v_mix_conv: bool = True
+    v_mix_conv_kernel: int = 3
 
 
 @dataclass

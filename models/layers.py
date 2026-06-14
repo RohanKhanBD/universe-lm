@@ -758,6 +758,17 @@ class MultiHeadAttention(nn.Module):
         # stash, no blend). See
         # `autoresearch/ideas/021-value-residual/plan.md`.
         use_value_residual: bool = False,
+        # 163 — Post-Attention V-Mix Depthwise Convolution. When on,
+        # `forward()` applies `F.conv1d(attn_output.transpose(1,2),
+        # self.v_mix_conv_weight, padding=k//2, groups=d_model)` AFTER
+        # the post-SDPA reshape and BEFORE the W_O projection (see
+        # `MultiHeadAttention.forward`). `v_mix_conv_kernel` is the
+        # 1-D kernel size; pinned to 3 (odd ≥ 3) for the spec test.
+        # Default off → baseline path bit-identical (no Parameter
+        # registered, no forward branch taken). See
+        # `autoresearch/ideas/163-v-mix-conv/idea.md`.
+        use_v_mix_conv: bool = False,
+        v_mix_conv_kernel: int = 3,
         # 129 — YOCO shared KV (Sun et al. 2024, arXiv:2405.05254).
         # When set, the MHA skips its W_K, W_V slices of the merged
         # qkvo_proj and reads K, V from the supplied `shared_kv`
@@ -1076,6 +1087,31 @@ class MultiHeadAttention(nn.Module):
         if self.use_value_residual:
             self.lambda_v = nn.Parameter(torch.zeros(()))
             self._v_residual = None
+        # 163 — Post-Attention V-Mix Depthwise Convolution. Stored
+        # on self; the conv is applied in `forward()` AFTER the
+        # `[B, H, T, D] → [B, T, d_model]` reshape and BEFORE the W_O
+        # projection. Raw `nn.Parameter(zeros(d_model, 1, k))` with
+        # center tap = 1.0 set inline (NOT `nn.Conv1d(...)`) so the
+        # construction does NOT consume RNG — keeping the RNG state
+        # aligned with the baseline path for the step-0 byte-
+        # identity test (any RNG advance between the two
+        # constructions would shift the next-block qkvo_proj random
+        # init and break the comparison). See
+        # `models/conv_ffn.py:103-105` for the sibling pattern.
+        self.use_v_mix_conv = use_v_mix_conv
+        # Clamp to odd >= 3; the spec pins k=3 (the only kernel we
+        # test at tiny1m3m — see idea.md §Design sketch caveat
+        # about small-channel regimes).
+        self.v_mix_conv_kernel = max(3, int(v_mix_conv_kernel) | 1)
+        if self.use_v_mix_conv:
+            w = torch.zeros(self.d_model, 1, self.v_mix_conv_kernel)
+            w[:, 0, self.v_mix_conv_kernel // 2] = 1.0
+            self.v_mix_conv_weight = nn.Parameter(w)
+        else:
+            # Stub so attribute lookups are always valid even when
+            # the flag is off. `forward()` never references this
+            # when `use_v_mix_conv=False` so it can be anything.
+            self.v_mix_conv_weight = None
         # 129 — YOCO: when set, the MHA reads shared K, V from the
         # `shared_kv` kwarg on `forward`, skipping the W_K, W_V
         # slices of the merged qkvo_proj. Default off → the W_K,
@@ -2826,7 +2862,38 @@ class MultiHeadAttention(nn.Module):
         attn_output = attn_output.transpose(1, 2).reshape(
             batch_size, seq_len, self.d_model
         )
-        
+
+        # 163 — Post-Attention V-Mix Depthwise Convolution. Apply a
+        # symmetric depthwise Conv1d over the time axis on the
+        # post-attention tensor `[B, T, d_model]` BEFORE the W_O
+        # projection. Conv weights are identity-initialized
+        # (center tap = 1, rest = 0, set inline at construction —
+        # see `MultiHeadAttention.__init__` for the raw-Parameter
+        # rationale). With `padding = k//2` symmetric (causal+
+        # future — the attention sublayer has already integrated
+        # the full causal context, so the conv may look at both
+        # neighbors) and `groups = d_model` (depthwise), the conv
+        # is a strict identity at step 0 ⇒ the post-attention
+        # tensor equals the no-flag path bit-for-bit. Composes
+        # cleanly with every preceding output-side lever
+        # (`use_head_gain`, `use_attn_output_gate`,
+        # `use_attn_output_channel_gate`, `use_gated_attn`,
+        # `use_talking_heads_out`, `_apply_output_op`) — those are
+        # multiplicative scalars on `attn_output`, the conv is a
+        # linear op that reads their combined result. Default off
+        # → branch never taken, baseline path bit-identical. See
+        # `autoresearch/ideas/163-v-mix-conv/idea.md`.
+        if self.use_v_mix_conv:
+            h = F.conv1d(
+                attn_output.transpose(1, 2),
+                self.v_mix_conv_weight,
+                bias=None,
+                stride=1,
+                padding=self.v_mix_conv_kernel // 2,
+                groups=self.d_model,
+            )  # [B, d_model, T]
+            attn_output = h.transpose(1, 2)  # [B, T, d_model]
+
         # ============ MERGED O PROJECTION ============
         # Use the last part of qkvo_proj for output projection
         output = F.linear(attn_output, self.qkvo_proj[self.qkv_size:])
@@ -3071,6 +3138,30 @@ class TransformerBlock(nn.Module):
         # MultiHeadAttention (see the MHA `use_value_residual` kwarg
         # for the mechanism). Default off → baseline path bit-identical.
         use_value_residual: bool = False,
+        # 163 — Post-Attention V-Mix Depthwise Convolution (Poli et
+        # al. "Hyena", 2023, arXiv:2302.10866). After the attention
+        # output is computed (post-SDPA, post-reshape, pre-W_O
+        # projection), apply a symmetric depthwise Conv1d on the
+        # time axis over the post-attention tensor `[B, T, d_model]`.
+        # Conv weights are built as a raw
+        # `nn.Parameter(zeros(d_model, 1, k))` with center tap = 1.0
+        # set inline (NOT `nn.Conv1d(...)` followed by `.data`
+        # reassignment — `nn.Conv1d` consumes RNG at init
+        # (kaiming_uniform_), which would shift the RNG state for
+        # every subsequent block's `qkvo_proj` random init and break
+        # the step-0 byte-identity claim across blocks 2..12). Same
+        # raw-`Parameter` pattern as `models/conv_ffn.py:103-105`
+        # (157-conv-ffn). Padding = `k//2` symmetric (causal+future)
+        # — the attention sublayer has already integrated the full
+        # causal context, so the conv may look at both neighbors.
+        # `v_mix_conv_kernel` defaults to 3 (spec pin); valid range
+        # is odd integers ≥ 3. Default off → baseline path
+        # bit-identical (no Parameter registered, no forward branch
+        # taken). Cost: n_layers × k × d_model extra params
+        # (12 × 3 × 64 = 2,304 at tiny1m3m, +0.25%). See
+        # `autoresearch/ideas/163-v-mix-conv/idea.md`.
+        use_v_mix_conv: bool = False,
+        v_mix_conv_kernel: int = 3,
         # 111 — DropPath / Stochastic Depth (Huang et al. 2016,
         # arXiv:1603.09382). Per-block Bernoulli gate during training:
         # with probability `1 - p_l` skip the whole block (residual
@@ -3309,6 +3400,9 @@ class TransformerBlock(nn.Module):
             use_softpick=use_softpick,
             use_ssmax=use_ssmax,
             use_value_residual=use_value_residual,
+            # 163 — Pass-through to MultiHeadAttention.
+            use_v_mix_conv=use_v_mix_conv,
+            v_mix_conv_kernel=v_mix_conv_kernel,
             # 129 — YOCO shared KV pass-through to the MHA. Default
             # off → standard path. See `autoresearch/ideas/129-yoco/idea.md`.
             use_shared_kv=use_shared_kv,
