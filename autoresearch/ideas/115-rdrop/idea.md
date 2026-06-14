@@ -1,8 +1,8 @@
 ---
 id: 115-rdrop
-status: needs-run
+status: done
 round: 2
-updated: 2026-06-14T04:48:37Z
+updated: 2026-06-14T05:07:05Z
 transfer-risk: med
 plain: It tries to run the same input through the model twice with different dropout masks and pull the two outputs to agree, so the model doesn't lean on any one dropout pattern.
 ---
