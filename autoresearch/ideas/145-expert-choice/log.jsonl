@@ -12,3 +12,4 @@
 {"ts":"2026-06-14T04:33:19Z","agent":"code-impl","idea":"145-expert-choice","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-14T04:33:47Z","agent":"code-impl","idea":"145-expert-choice","from":"planning","to":"needs-run","round":1,"note":"plan+code done"}
 {"ts":"2026-06-14T04:47:07Z","agent":"runner","idea":"145-expert-choice","from":"needs-run","to":"running","round":1,"note":"claimed: queued in tmux"}
+{"ts":"2026-06-14T04:48:37Z","agent":"reset-button","idea":"145-expert-choice","from":"running","to":"needs-run","round":1,"note":"auto-requeued stale GPU run (no live supervisor)"}

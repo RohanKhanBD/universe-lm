@@ -14,3 +14,4 @@
 {"ts":"2026-06-13T20:53:08Z","agent":"implement-button","idea":"115-rdrop","from":"needs-recode","to":"implementing","round":2,"note":"claimed by implement button"}
 {"ts":"2026-06-13T20:58:04Z","agent":"implement-button","idea":"115-rdrop","from":"implementing","to":"needs-run","round":2,"note":"OOM fixed: chunked KL in _rdrop_loss (16x memory reduction, ~100MB peak); step-0 byte-identical with flag off. Runnable at tiny1m3m seed 42."}
 {"ts":"2026-06-14T04:47:07Z","agent":"runner","idea":"115-rdrop","from":"needs-run","to":"running","round":2,"note":"claimed: queued in tmux"}
+{"ts":"2026-06-14T04:48:37Z","agent":"reset-button","idea":"115-rdrop","from":"running","to":"needs-run","round":2,"note":"auto-requeued stale GPU run (no live supervisor)"}

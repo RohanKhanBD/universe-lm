@@ -1,8 +1,8 @@
 ---
 id: 147-dropkey
-status: running
+status: needs-run
 round: 1
-updated: 2026-06-14T04:47:07Z
+updated: 2026-06-14T04:48:37Z
 transfer-risk: med
 plain: Drop random keys during attention (instead of dropping values or attention scores) to regularize the attention pattern.
 ---
