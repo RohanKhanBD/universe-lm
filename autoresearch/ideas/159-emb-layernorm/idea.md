@@ -1,8 +1,8 @@
 ---
 id: 159-emb-layernorm
-status: implementing
+status: recoding
 round: 1
-updated: 2026-06-14T04:45:00Z
+updated: 2026-06-14T04:45:10Z
 transfer-risk: low
 plain: Normalize the token embeddings once at the very start of the model so every layer sees inputs on a consistent scale — a tiny change that several large models use but our closed norm zoo didn't test.
 ---
@@ -45,17 +45,25 @@ Default `nn.LayerNorm(d_model)` init (`weight=1, bias=0`) is preserved — `_ini
 ### Flag, files, run command
 - Config flag: `use_emb_layernorm: bool` (default False on `LLMConfig`).
 - A/B subclass for the runner: `Tiny1M3MEmbLayerNormConfig` (sets `use_emb_layernorm = True`).
-- Run command (per `autoresearch/prompts/runner.md`):
+- Bootstrap file (per the runner harness — idea flags are not CLI args; you must
+  subclass the tier config in a tiny file and use `--config_class __main__.C`):
+  `_arq_159-emb-layernorm.py` at repo root. Imports
+  `Tiny1M3MEmbLayerNormConfig` as `C` and invokes `train_llm.main()` with
+  `--config_class __main__.C`. Mirrors `_arq_155-per-head-temp.py`,
+  `_arq_156-moa.py`, `_arq_158-gau.py`.
+- Run command (per `autoresearch/prompts/runner.md` — **note: the entry point
+  is `train_llm.py`, NOT `main.py`**; the previous run failed with
+  `can't open file '/root/universe-lm/main.py'`, this is the fix):
   ```
-  /venv/main/bin/python /root/universe-lm/main.py \
-      --config_class configs.llm_config.Tiny1M3MEmbLayerNormConfig \
-      --seed 42
+  /venv/main/bin/python /root/universe-lm/_arq_159-emb-layernorm.py
   ```
-  vs. control:
+  vs. control (baseline `Tiny1M3MConfig`; a cache lookup at
+  `autoresearch/bin/baseline.sh check` decides whether a fresh ctrl is needed
+  or the cached mean±band is reused):
   ```
-  /venv/main/bin/python /root/universe-lm/main.py \
+  /venv/main/bin/python /root/universe-lm/train_llm.py \
       --config_class configs.llm_config.Tiny1M3MConfig \
-      --seed 42
+      --seed 42 --dataset_path processed_data/pretrain_1B --warmup false
   ```
 - Final val loss is read at `eval_milestones=(0, 25, 50, 75, 100, 150, 200, 300, 400, 500, 600, 700)` from the harness stdout / `records.jsonl` (same as every other tiny1m3m A/B).
 - Cost: 2·d_model = 128 extra params at tiny1m3m (~0.014% of the 0.94M model — negligible).
