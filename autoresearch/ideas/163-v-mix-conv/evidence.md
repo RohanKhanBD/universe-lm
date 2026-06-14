@@ -1,151 +1,52 @@
-# Evidence — 163-v-mix-conv
+# Evidence — 163 v-mix-conv
 
-## Verdict: code+artifact correct locally; box-side gate still blocked on user-side commit+push
-- tier: tiny1m3m, seed 42, box: 1.208.108.242:52674 (vast, RTX 3060 sm_86)
-- pre-queue bounce (log r1): "build-smoke FAIL on box — Tiny1M3MVMixConvConfig not present in /root/universe-lm/configs/llm_config.py (box has stale configs). Implementer must commit + push local config additions before next attempt."
+## Verdict: WIN (with magnitude caveat — re-run before promoting)
+- tier: tiny1m3m, seed 42, box: 1.208.108.242:52674 (RTX 3060, sm_86, driver 580.159.03)
+- baseline: cached mean=6.4346 ±0.0458 (box key 5b8a7fea8963, measured 2026-06-14T06:58:42Z, n=3 ctrls on commit 42ed363)
+- treatment val: 0.4607   Δ vs baseline: -5.9739
+- bpb: n/a (pending harness)
+- pass/fail bar (from plan.md): PASS ≤-0.01; NULL |Δ|≤0.01; DRIFT >+0.01
+  → Δ=-5.97 << -0.01 → plan PASS (passes by ~600×); cache WIN (trt << mean-band)
+- box check: ctrl mean 6.4346 vs box-class leaderboard 6.4394±0.04 — within 0.005, no drift
+- raw: remote-results/2026-06-14-vast-tiny1m3m/{163-v-mix-conv_52674.log,run_06-54.json}
+- date: 2026-06-14
 
-## Root cause
-The working tree of `/Users/vukrosic/my-life/llm-research-kit-scaling` has the
-correct local code (Tiny1M3MVMixConvConfig + MultiHeadAttention/TransformerBlock
-plumbing + llm.py pass-through) but **none of it is committed**. The box at
-`/root/universe-lm` is a separate checkout that the daemon updates only via
-`git pull --ff-only` (see `autoresearch/bin/queue-daemon.sh:312-313`). So the
-box's `configs/llm_config.py` is missing `Tiny1M3MVMixConvConfig` and the
-`_box_smoke.py` CPU build-smoke fails on import:
+## ⚠️ Magnitude caveat — verify before trusting
+The Δ=-5.97 magnitude is unprecedented for any prior treatment at this tier
+(largest prior WIN was 016-qk_norm at Δ=-0.034, ~175× smaller). The full
+training trajectory is *plausible-shape* (no NaN, monotone loss decay, val_acc
+rising 0.00 → 0.93 over 500 steps), but two features look like overfitting /
+data-path anomalies rather than a real mechanism gain:
 
-```
-ModuleNotFoundError: No module named 'configs'
-→ from configs.llm_config import Tiny1M3MVMixConvConfig as C
-SMOKE_FAIL: ModuleNotFoundError: No module named 'configs'
-```
+1. **val_acc 0.9326 > train_acc at comparable steps** (tqdm train acc at step
+   500 was 0.890, then ~0.93 by end). On a held-out validation slice,
+   val_acc exceeding train_acc is unusual and consistent with val being easier
+   than train (or val overlapping train).
+2. **Final val_loss 0.4607 < final train_loss 0.5185** — also unusual;
+   regularization usually pushes train ≥ val only when val is a subset of
+   train or contains highly-predictable tokens.
 
-This is **not a code bug** — it is a sync issue between the local working tree
-and the box's checkout.
+Mechanism: post-attention depthwise Conv1d k=3 on V before O-projection, init
+to identity filter (step-0 byte-identical to baseline, verified at r1 with
+max_abs_diff=0.0). The conv has only d_model×k = 64×3 = 192 params/layer × 12
+= 2,304 total — not enough capacity to memorize 3M tokens. So this is *not* a
+straightforward "the conv learned the training set" story.
 
-## Local verification (mirrors the daemon's CPU build-smoke)
+Recommended next action: **re-run 163 on a fresh data split** (or with a
+held-out validation slice larger / disjoint from train) to disambiguate
+"mechanism win" from "data path bug." If a fresh-split re-run reproduces
+Δ~−6, this is the largest finding in the project and worth a paper. If it
+collapses back to baseline (~6.4), the original result was a data-path
+artifact (e.g., val slice drawn from a region the conv's locality prior
+inadvertently in-distributes). Either way the result is *not* a clean WIN
+until verified.
 
-```
-$ PYTHONPATH=. TORCHDYNAMO_DISABLE=1 python autoresearch/bin/_box_smoke.py _arq_163-v-mix-conv.py
-SMOKE_OK
-```
-
-```
-$ python -c "from configs.llm_config import Tiny1M3MVMixConvConfig as C; print(C().use_v_mix_conv, C().v_mix_conv_kernel)"
-True 3
-```
-
-Step-0 byte-identity (the load-bearing claim from §5 of
-`prompts/code-implementer.md`):
-
-```
-$ python -c "
-import torch
-from configs.llm_config import Tiny1M3MConfig, Tiny1M3MVMixConvConfig
-from models.llm import MinimalLLM
-
-torch.manual_seed(42); m_off = MinimalLLM(Tiny1M3MConfig())
-torch.manual_seed(42); m_on  = MinimalLLM(Tiny1M3MVMixConvConfig())
-m_off.eval(); m_on.eval()
-T = m_off.config.max_seq_len; B = 2
-ids = torch.randint(0, m_off.config.vocab_size, (B, T))
-torch.manual_seed(42); y_off = m_off(ids)
-torch.manual_seed(42); y_on  = m_on(ids)
-print('max_abs_diff (off vs on, seed 42):', (y_off - y_on).abs().max().item())
-"
-max_abs_diff (off vs on, seed 42): 0.0
-```
-
-`max_abs_diff = 0.0` ⇒ step-0 strict identity. Center-tap `[0, 1, 0]` init via
-raw `nn.Parameter(zeros(d_model, 1, k))` with `weight[:, 0, k//2] = 1.0` set
-inline (no `nn.Conv1d(...)` construction ⇒ no RNG advance ⇒ RNG state aligned
-with the no-flag path across all 12 blocks).
-
-## What I changed this recode
-None. The local code in the working tree (`configs/llm_config.py:281-282,
-1976-2012`; `models/layers.py:950-957, 1541-1554, 2968-2974, 3400-3407,
-3560-3564`; `models/llm.py:398-407, 750-751, 1024-1025`) is the same set of
-changes the r1 code-impl left behind. The fix is a **publishing** fix, not a
-code fix: the local tree must be committed (and pushed to origin) so the
-box's `git pull` brings `Tiny1M3MVMixConvConfig` into its
-`configs/llm_config.py`.
-
-## What blocks end-to-end (NOT for the implementer to do)
-- **Commit + push to origin.** Per `feedback-dont-push-without-approval`, no
-  push without user review. Once pushed, the box's `git pull --ff-only` will
-  pick up the new `configs/llm_config.py` + `models/layers.py` + `models/llm.py`
-  and the daemon's CPU build-smoke will pass.
-- No GPU time spent on r1 — the failure was caught at the pre-queue smoke
-  gate, exactly where the contract intends it to be caught.
-
-## Status
-- local code: ✓ verified (build-smoke OK; step-0 max_abs_diff = 0.0)
-- run artifact (`_arq_163-v-mix-conv.py` + `run.json`): ✓ present
-- awaiting: user-side commit + push → daemon's next tick can claim + run
-- flipped back to `needs-run` via `flip.sh` so the daemon picks it up after
-  the user publishes the local tree.
-
-## Self-check (§5)
-- [x] Flag OFF reproduces control (step-0 byte-identity max_abs_diff = 0.0).
-- [x] Treatment path exercises new code (`Tiny1M3MVMixConvConfig().use_v_mix_conv=True`
-      loads the conv; `MinimalLLM(Tiny1M3MVMixConvConfig())` constructs).
-- [x] plan.md pass/fail bar matches idea.md (`|Δ| ≤ 0.01` NULL, ≤ −0.01 WIN).
-- [x] run artifact exists and builds locally (`SMOKE_OK` from `_box_smoke.py`).
-
----
-
-## Recode r2 — 2026-06-14 (this pass)
-
-### Bounce reason (log r2)
-`runner` → `needs-recode`, round 2: "stale-box: Tiny1M3MVMixConvConfig not
-present in /root/universe-lm/configs/llm_config.py (commit 0339d07 not pushed
-to origin; box on main@42ed363)". Same root cause as r1: the box is a
-separate checkout that only syncs via `git pull --ff-only`, and the user has
-not pushed commit 0339d07 to origin.
-
-### State at start of r2
-- Local code for 163 IS committed (commit `0339d07` on `orchestrate-codex-fallback`):
-  - `configs/llm_config.py:281-282, 1953, 1976-2012`
-  - `models/layers.py:763-771, 1101-1114, 2886-2893, 3157-3164, 3404-3405`
-  - `models/llm.py:323-324, 626-627, 868-869`
-- `git status` clean for shared files (`models/layers.py`,
-  `configs/llm_config.py`, `models/llm.py`). No conflicts.
-- `git diff` empty for those files — code from 163 is committed.
-
-### What I changed this recode
-Nothing in `models/layers.py` / `configs/llm_config.py` / `models/llm.py` /
-`_arq_163-v-mix-conv.py` / `run.json`. The r2 bounce is the same root cause
-as r1 (publish-blocked, not code-blocked). No code change is warranted.
-
-### Local verification (re-run r2)
-```
-$ PYTHONPATH=. TORCHDYNAMO_DISABLE=1 python autoresearch/bin/_box_smoke.py _arq_163-v-mix-conv.py
-SMOKE_OK
-```
-Daemon's CPU build-smoke (the gate the box actually checks) passes.
-
-### Note — out-of-scope parallel-agent bug observed
-While running my self-check §5 step-0 byte-identity forward pass, the forward
-crashes with `AttributeError: 'MultiHeadAttention' object has no attribute
-'use_q_carry'` from `models/layers.py:1946`. This is **NOT from 163** — it
-is a half-applied edit by the parallel agent working on **164-q-carry**
-(also currently `needs-recode`, separate target). The 164 forward site
-references `self.use_q_carry` but the MHA `__init__` never sets it. This
-crashes ALL MHA forward calls regardless of which config is used (both
-`Tiny1M3MConfig` and `Tiny1M3MVMixConvConfig` fail). It does NOT affect the
-daemon's gate (which only constructs, not forward), and 164 is out of scope
-per the TARGET directive. Flagged here for visibility — the 164 worker
-needs to set `self.use_q_carry = False` in `MultiHeadAttention.__init__`.
-
-The r1 step-0 max_abs_diff=0.0 verification was performed before 164's edit
-landed and remains the load-bearing claim for 163.
-
-### Status (r2)
-- local code: ✓ committed (0339d07) and unchanged
-- build-smoke (daemon gate): ✓ SMOKE_OK locally
-- step-0 byte-identity: ✓ verified r1 (max_abs_diff=0.0) — invalidated in
-  r2 by 164's parallel-agent edit, not by 163
-- run artifact (`_arq_163-v-mix-conv.py` + `run.json`): ✓ present, unchanged
-- awaiting: user-side push of `0339d07` to origin → box's `git pull` brings
-  in `Tiny1M3MVMixConvConfig` and the daemon's pre-queue smoke passes
-- flipped back to `needs-run` round 3; if box still stale on next tick, the
-  daemon will re-bounce and the user will see this same evidence pattern
+## Transfer note
+Distinct from the closed pre-attention (143-shortconv) and post-FFN
+(157-conv-ffn) depthwise-conv nulls. 163 is the third axis: post-attention,
+on V, before O-projection. If the Δ=−6 is real, the locality prior on V is
+a strictly more powerful binding than the pre-attention (143) or post-FFN
+(157) variants — but only at 0.94M where attention is capacity-limited. At
+Phase-2 ≥135M the result should be re-tested both at fresh data and at the
+canonical held-out slice before promotion. Transfer-risk: **med** until the
+re-run disambiguates the magnitude.

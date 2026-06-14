@@ -8,3 +8,4 @@
 {"ts":"2026-06-14T06:04:55Z","agent":"code-impl","idea":"164-q-carry","from":"needs-recode","to":"needs-run","round":2,"note":"wired MHA init (use_q_carry+alpha_q+_q_carry stash) + TransformerBlock forward kwarg + MinimalLLM stash/loop; build-smoke OK, step-0 bit-identical (diff=0.00), +12 params as expected"}
 {"ts":"2026-06-14T06:15:53Z","agent":"runner","idea":"164-q-carry","from":"needs-run","to":"running","round":2,"note":"claimed: queued in tmux (MEASURE: 3 ctrls + 4 trt)"}
 {"ts":"2026-06-14T06:20:21Z","agent":"reset-button","idea":"164-q-carry","from":"running","to":"needs-run","round":2,"note":"auto-requeued stale GPU run (no live supervisor)"}
+{"ts":"2026-06-14T07:02:41Z","agent":"runner","idea":"164-q-carry","from":"needs-run","to":"done","round":2,"note":"NULL: trt=6.4706 vs cached mean=6.4346±0.0458 (Δ=+0.0360 inside band, plan DRIFT wrong-sign)"}
