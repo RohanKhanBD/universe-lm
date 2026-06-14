@@ -12,3 +12,4 @@
 {"ts":"2026-06-14T10:13:22Z","agent":"runner","idea":"170-swiglu-ffn","from":"needs-run","to":"running","round":1,"note":"claimed: queued in tmux"}
 {"ts":"2026-06-14T10:14:53Z","agent":"reset-button","idea":"170-swiglu-ffn","from":"running","to":"needs-run","round":1,"note":"auto-requeued stale GPU run (no live supervisor)"}
 {"ts":"2026-06-14T10:24:14Z","agent":"run-button","idea":"170-swiglu-ffn","from":"needs-run","to":"running","round":1,"note":"claimed by Run-next"}
+{"ts":"2026-06-14T10:28:45Z","agent":"runner","idea":"170-swiglu-ffn","from":"running","to":"done","round":1,"note":"NULL: trt=6.4247 vs session ctrl mean 6.4417 (Δ=-0.0170); cache verdict NULL -0.020 (inside mean=6.4447±0.0488); train=6.3893 (right sign by ~0.05) but val inside noise band — same FFN-activation null pattern as 153-relu2-ffn; closes FFN-gating axis at 0.94M"}
