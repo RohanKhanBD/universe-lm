@@ -1,8 +1,8 @@
 ---
 id: 140-sophia
-status: revising
-round: 2
-updated: 2026-06-14T04:32:13Z
+status: needs-review
+round: 3
+updated: 2026-06-14T04:33:52Z
 transfer-risk: med
 plain: An optimizer that uses the second derivative (curvature) of the loss to take bigger steps in flat directions and smaller steps in steep ones.
 ---
@@ -66,6 +66,7 @@ With `use_sophia=False` (default) the `Sophia` class is never instantiated and t
 
 ### Re-code note (2026-06-14, round 1 → 2)
 A previous GPU run failed with `ImportError: cannot import name 'Tiny1M3MSophiaConfig' from configs.llm_config` because the box was stale at `7a69c1a` and missing the `bd5adf5` commit that introduced the config class. **No local code change is required** — the class exists at `configs/llm_config.py:2084` and `optimizers/sophia.py` imports cleanly. The local smoke test passed: `MinimalLLM(Tiny1M3MSophiaConfig)` builds 949,056 params (bit-identical to `Tiny1M3MConfig`), forward at step 0 is bit-identical when seeded the same way, and `Sophia._step_count` increments correctly through `.step()`. The box must `git pull` (or fast-forward to a commit ≥ `bd5adf5`) before the next queue picks up `_arq_140-sophia.py`; otherwise the import will keep failing.
+
 That import issue is separate from the current trainer-scope fix below: derive `adamw_params` inside the Hutchinson block from `sophia_opt.param_groups` so the Sophia path does not depend on `setup_muon_optimizer()` scope.
 
 ### How the final val loss is read
