@@ -1,8 +1,8 @@
 ---
 id: 171-dropconnect-wo
-status: tasting
+status: needs-repitch
 round: 1
-updated: 2026-06-14T09:24:02Z
+updated: 2026-06-14T09:24:40Z
 transfer-risk: med
 plain: During training, randomly zero out individual weights of the attention output matrix (DropConnect) as a regularizer, with the rate starting at zero so the first step is identical to the baseline.
 ---
@@ -99,3 +99,37 @@ already null; 171 weight-drop joins them) and the regularization family is
 exhausted at this tier. A win would tell us weight-level noise binds where
 token-level and path-level don't. Step-0 byte-identical, low implementation
 risk, well-isolated A/B.
+
+## Plan
+
+- **Files**:
+  - `configs/llm_config.py` — add `use_dropconnect_wo: bool = False` and
+    `dropconnect_wo_rate: float = 0.1` next to `use_drop_key` (≈ line 720).
+  - `models/layers.py` —
+    - `MultiHeadAttention.__init__`: add the two kwargs after `use_drop_key`
+      / `drop_key_rate` (≈ line 968); store as `self.use_dropconnect_wo`,
+      `self.dropconnect_wo_rate` after `self.use_drop_key` (≈ line 1636).
+    - `MultiHeadAttention.forward`: branch at the W_O application site
+      (≈ line 3233) — sample Bernoulli mask, rescale, use masked W_O.
+    - `TransformerBlock.__init__`: pass-through kwargs after the drop_key
+      pass-through (≈ line 3737). YOCOLlamaBlock forwards via `*args,
+      **kwargs` so it's covered automatically.
+  - `models/llm.py` — `MinimalLLM.__init__`: read
+    `use_dropconnect_wo` / `dropconnect_wo_rate` next to
+    `use_drop_key` (≈ line 264); pass-through at the YOCO upper-half
+    construction (≈ line 607) and the standard TransformerBlock
+    construction (≈ line 870).
+- **Config flag**: `use_dropconnect_wo: bool = False` (off by default),
+  `dropconnect_wo_rate: float = 0.1` (Wan et al. sweet spot).
+- **Step-0 byte-identical**: when `use_dropconnect_wo=False`, the branch
+  is never taken (no RNG consumed, no parameter created) ⇒ baseline path
+  bit-identical. When `use_dropconnect_wo=True` with
+  `dropconnect_wo_rate=0.0`, the guard `rate > 0.0` skips the mask
+  branch ⇒ also bit-identical (cost: one extra branch comparison).
+  Eval mode (`self.training == False`) also skips the mask.
+- **Run command** (treatment):
+  `/venv/main/bin/python runner/runner.py --config tiny1m3m
+   --seed 42 --override use_dropconnect_wo=True,dropconnect_wo_rate=0.1`
+- **Read final val loss**: from the runner's standard log line
+  `val_loss=...` at the final step; compare against the baseline
+  6.4216 from `token2science-papers-platform` memory.
