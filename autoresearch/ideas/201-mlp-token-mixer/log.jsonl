@@ -29,3 +29,7 @@
 {"ts":"2026-06-15T16:50:16Z","agent":"daemon","idea":"201-mlp-token-mixer","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: no smoke output (scp/connection failed)"}
 {"ts":"2026-06-15T16:50:31Z","agent":"auto-implement","idea":"201-mlp-token-mixer","from":"needs-recode","to":"needs-review","round":1,"note":"auto-fix gave up after 5 failed runs — needs a human"}
 {"ts":"2026-06-15T16:50:32Z","agent":"reset-button","idea":"201-mlp-token-mixer","from":"needs-review","to":"needs-run","round":1,"note":"auto-requeued stale GPU run (no live supervisor)"}
+{"ts":"2026-06-15T16:56:08Z","agent":"daemon","idea":"201-mlp-token-mixer","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T16:56:30Z","agent":"daemon","idea":"201-mlp-token-mixer","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: no smoke output (scp/connection failed)"}
+{"ts":"2026-06-15T16:56:37Z","agent":"auto-implement","idea":"201-mlp-token-mixer","from":"needs-recode","to":"needs-review","round":1,"note":"auto-fix gave up after 6 failed runs — needs a human"}
+{"ts":"2026-06-15T16:56:41Z","agent":"auto-implement","idea":"201-mlp-token-mixer","from":"needs-review","to":"rejected","round":1,"note":"auto-rejected: blocked 5x with no path forward (see log)"}

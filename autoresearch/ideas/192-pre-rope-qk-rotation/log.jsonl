@@ -9,3 +9,6 @@
 {"ts":"2026-06-15T16:48:43Z","agent":"daemon","idea":"192-pre-rope-qk-rotation","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
 {"ts":"2026-06-15T16:50:16Z","agent":"daemon","idea":"192-pre-rope-qk-rotation","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: no smoke output (scp/connection failed)"}
 {"ts":"2026-06-15T16:50:32Z","agent":"reset-button","idea":"192-pre-rope-qk-rotation","from":"needs-recode","to":"needs-run","round":1,"note":"auto-requeued stale GPU run (no live supervisor)"}
+{"ts":"2026-06-15T16:56:07Z","agent":"daemon","idea":"192-pre-rope-qk-rotation","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T16:56:38Z","agent":"daemon","idea":"192-pre-rope-qk-rotation","from":"running","to":"needs-run","round":1,"note":"launch aborted: ABORT:gpu-busy-1proc — GPU not idle (1-by-1 guard)"}
+{"ts":"2026-06-15T16:56:43Z","agent":"daemon","idea":"192-pre-rope-qk-rotation","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
