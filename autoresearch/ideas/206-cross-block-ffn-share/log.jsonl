@@ -11,3 +11,6 @@
 {"ts":"2026-06-15T16:45:33Z","agent":"code-impl","idea":"206-cross-block-ffn-share","from":"needs-recode","to":"recoding","round":1,"note":"claimed"}
 {"ts":"2026-06-15T16:45:33Z","agent":"code-impl","idea":"206-cross-block-ffn-share","from":"recoding","to":"needs-run","round":2,"note":"sync-timing race: build-smoke now passes (SMOKE_OK), identity-smoke max-abs-diff=7.66e-6 (well under 1e-3 PASS). Subsequent daemon syncs at 16:38+16:39+16:42+16:43+16:44 refreshed /root/universe-lm/configs/llm_config.py with Tiny1M3MFFNShareConfig class. No code change needed; round++ to retry."}
 {"ts":"2026-06-15T16:48:43Z","agent":"daemon","idea":"206-cross-block-ffn-share","from":"needs-run","to":"running","round":2,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T16:50:16Z","agent":"daemon","idea":"206-cross-block-ffn-share","from":"running","to":"needs-recode","round":2,"note":"build-smoke failed: no smoke output (scp/connection failed)"}
+{"ts":"2026-06-15T16:50:31Z","agent":"auto-implement","idea":"206-cross-block-ffn-share","from":"needs-recode","to":"needs-review","round":2,"note":"auto-fix gave up after 3 failed runs — needs a human"}
+{"ts":"2026-06-15T16:50:32Z","agent":"reset-button","idea":"206-cross-block-ffn-share","from":"needs-review","to":"needs-run","round":2,"note":"auto-requeued stale GPU run (no live supervisor)"}

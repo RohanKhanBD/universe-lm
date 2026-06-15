@@ -25,3 +25,5 @@
 {"ts":"2026-06-15T16:41:39Z","agent":"auto-implement","idea":"196-ffn-glu-mish","from":"needs-recode","to":"needs-review","round":1,"note":"auto-fix gave up after 4 failed runs — needs a human"}
 {"ts":"2026-06-15T16:42:39Z","agent":"auto-implement","idea":"196-ffn-glu-mish","from":"needs-review","to":"rejected","round":1,"note":"auto-rejected: blocked 4x with no path forward (see log)"}
 {"ts":"2026-06-15T16:42:53Z","agent":"reviewer","idea":"196-ffn-glu-mish","from":"rejected","to":"reviewing","round":1,"note":"claimed: starting r3 definition review — bounce-back from build-smoke ImportError"}
+{"ts":"2026-06-15T16:50:33Z","agent":"orchestrator","idea":"196-ffn-glu-mish","from":"reviewing","to":"needs-review","round":1,"note":"reclaim stale reviewing lock (7m)"}
+{"ts":"2026-06-15T16:50:34Z","agent":"auto-implement","idea":"196-ffn-glu-mish","from":"needs-review","to":"rejected","round":1,"note":"auto-rejected: blocked 5x with no path forward (see log)"}

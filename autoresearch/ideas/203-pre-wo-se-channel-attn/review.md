@@ -1,5 +1,67 @@
 # Review log — 203 pre-W_O SE channel attention
 
+## r3 — 2026-06-15 — verdict: approve
+
+All four r1 findings land cleanly. Round 3 hits the definition-gate cap
+(3-round budget exhausted), so the verdict is forced — the lever is
+sound, fully specified, and ready to plan.
+
+**Finding A (per-token vs per-sample) — RESOLVED.** The r3
+`## Mechanism` block now applies the MLP per-token to the channel
+vector, no T-axis pooling:
+`se_weight_t(x_t) = sigmoid(W_2 · gelu(W_1 · x_t))`, with `W_1 ∈
+R^{d_model × d_model/r}` and `W_2 ∈ R^{d_model/r × d_model}` shared
+across all tokens/positions. Matches the plain frontmatter, the
+title parenthetical ("Per-Token Channel Reweighting"), the design-
+sketch comment, and the closing intuition in "Why it's worth a slot."
+
+**Finding B (concrete pass bar) — RESOLVED.** `## Pass bar` names
+the 4-ctrl cluster mean 6.4394, sets WIN at `Δval ≤ -0.01` (clears the
+±0.01 box-noise band; must also beat both individual ctrls per the
+§2 two-ctrl rule), NULL at `|Δ| ≤ 0.04` (cache band; closes the
+post-AV axis family at 0.94M when paired with 142/160/181/191), and
+Above-band at `Δ ≥ +0.04` (consider harmful, abandon). The bit-
+identity check is now the **gate for the WIN/NULL read** — the
+implementer must report `max-abs-diff < 1e-5` at step 0 vs the
+same-seed baseline, with the diagnostic that a larger diff means a
+wiring bug (γ not on the residual, W_1/W_2 init non-default), not
+real signal. Good.
+
+**Finding C (bit-identity wording) — RESOLVED.** "Exactly bit-
+identical" replaced with `step-0 max-abs-diff < 1e-5 vs the same-seed
+baseline run at fp32`; the text now explicitly notes the internal
+`se_weight_t` is ~0.5 (not 1.0) at init and that the γ-gate silences
+the branch *anyway* — implementer's self-check is the concrete
+number, not an unverifiable claim.
+
+**Finding D (γ_raw → Muon param group) — RESOLVED.** The design
+sketch now says: route `γ_raw` to the **Muon** group (1-D gain
+scalars benefit from Muon's LR scale; AdamW at peak LR 0.024 is ~10×
+too hot for a scalar). Two implementer options are spelled out: (a)
+name the param with a `norm`-suffixed key so `muon_for_1d_norm=True`
+catches it, or (b) add a small explicit `if 'se_gamma' in name`
+branch in the Muon routing. Cites 021/207 reviewer precedent. Fine.
+
+**Other gates (re-confirmed).** Source: Hu et al. SE-Net
+(arXiv:1709.01507, TPAMI 2019) + Woo et al. CBAM (arXiv:1807.06521,
+ECCV 2018) — both real, well-known. Mechanism is structural (a
+small per-token channel-attention MLP with γ-gated residual blend),
+not a hyperparameter lever. tiny1m3m only, seed 42. LoC ~30–50 in
+`models/layers.py` at the out_proj apply site (well under 200).
+Not a duplicate of any closed lever: 142/160/181/191/176 are all
+content-INdependent (per-channel *static* gain, per-head *static*
+gain, cross-head *static* RMSNorm, per-token *static* scalar, V-side
+*static* norm) and 203 is the **content-dependent + per-channel
+resolution** cell of the post-AV axis family. Transfer-risk: med
+defensible — SE/CBAM validated at ImageNet across all scales; the
+*placement* in attention output is novel but the conditioning
+primitive (small MLP → sigmoid → multiply) is well-known. Falsifiable
+on one seed.
+
+**Routing.** Approve → `needs-plan`, round reset to 1 (per the §3
+reset rule for `approve` on round 3 — the code gate gets a fresh
+budget).
+
 ## r1 — 2026-06-15 — verdict: revise
 
 **Why it doesn't yet clear the definition gate:**
