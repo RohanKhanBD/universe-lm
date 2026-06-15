@@ -1,5 +1,25 @@
 # Taste log — 199 attn-output-lowrank
 
+## r2 — 2026-06-15 — verdict: accept
+
+The miner did exactly the r1 reviser asked for, in the right direction. The lever is now a clean, sharp, family-completion test, the design matches the in-flight owners (207 on W_O, 194-r2 on W_V), and the pre-registered falsification framing gives a clean null-result path. Four findings, all in support of accept.
+
+- **Pivot to W_Q closes the r1 duplicate-of-207 finding.** r1 rejected 199 as a hard-replace of W_O after 207 (needs-plan, soft-residual on W_O) had already claimed that axis. r2 moves the lever to W_Q, which is the only `d_model × d_model` attention sub-block not yet owned by anyone in the active queue: 207 owns W_O (rank-axis), 194-r2 owns W_V (rank-axis), 197 owns W_O (sharing-axis), 199-spectral owns W_O (Lipschitz-axis). W_Q is genuinely open. This is *gap-filling*, not crowding — the right move for a queue with five other in-flight attention levers.
+
+- **Design now matches 207/194-r2 exactly.** r1 found 199's `W_O = A·B` hard-replace + SVD init structurally weaker than 207's `W_O_eff = W_O + α·A·B` soft-residual (bit-identity is engineering-trickier, hard constraint conflates rank with param reduction, SVD over a random W_O is a "frozen-during-construction" trick). r2 switches to the same soft-residual mechanism with the same α=sigmoid(α_raw) at α_raw=−10 init (α ≈ 4.5e-5 at step 0 ⇒ bit-identical to baseline for free), same r=16, same +24,576 params (+2.6%) — the A/B against 207/194-r2 is now direct. No more SVD plumbing, no more "destroyed by optimizer after step 0" footgun.
+
+- **Crisp one-sentence bet.** "At 0.94M/12L/4H, W_Q ∈ R^{64,64} projects the residual stream into query space; if effective_rank(W_Q) < 32 at convergence, a rank-16 correction init-α=0 lets the optimizer exploit that structure, and the lever binds; if effective_rank(W_Q) ≈ 64, the rank-16 correction is silent and the run is identical to baseline." That's a real bet: a single structural prior (effective rank of W_Q) gates a sharp prediction. The 162 (Q-only norm, null) and 165 (K-only norm, null) priors do *not* bind this bet because norm ≠ rank — a normalized W_Q can still be low-rank and vice versa. The 016-qk-norm WIN is on a different axis too (joint QK magnitude, not single-side projection rank). The pitch correctly notes norm and rank are orthogonal in mechanism space.
+
+- **Pre-registered falsification framing is the killer feature.** A null result here is informative: 199-r2 null + 207 null + 194-r2 null ⇒ rank-residual sub-block family closed at 0.94M (three independent sub-block tests of the same mechanism all failing = canonical "axis exhausted" signal). A win on 199-r2 but null on 207 isolates "W_Q-specific rank binding." A win on 207 but null on 199-r2 isolates "W_O-only rank binding." A win on both supports transfer to 10M+. This is exactly the kind of "clean null is still worth logging" the taste protocol asks for. The lever is worth testing *because* it's part of a family test, not despite being one.
+
+- **Transfer-risk: med is fair.** Mechanism is the same as 207/194-r2 (already in flight), placement is novel (W_Q is the only remaining d_model × d_model attention sub-block without a rank probe at 0.94M), identity/zero-init-able at α=0. LoRA at 7B-65B (Q,V are the most-adapted matrices) and LLM.int8() (Q/K/V/O show effective rank 30-60% of nominal at 7B+) both provide the structural prior that Q is approximately low-rank at scale; 199-r2 is the canonical test at 0.94M. The lever is well-defined enough to port to the 10M+ ladder if it binds.
+
+- **Niche fit is clean.** Mechanism (rank-r soft-residual, structural lever not HP), identity/zero-init-able (α=0 at step 0, bit-identical to baseline for free), tiny1m3m runnable (+24,576 params is well inside the noise band), no data/infra dependencies. The `## Scale evidence` section is present, the `transfer-risk: med` tag is set. The pitch passes every niche check.
+
+- **Verdict: accept.** The lever is sharp, the bet is one sentence, the family-completion framing makes a null result informative, the design matches the in-flight owners, and the niche/transfer checks all pass. Resets to round 1 for the definition gate's own budget.
+
+Routing: `needs-review` for the definition gate.
+
 ## r1 — 2026-06-15 — verdict: revise
 
 The lever targets the right axis (low-rank W_O, from-scratch) but the queue already owns this axis, the design is structurally weaker than the existing owner, and the niche-fit math doesn't favor running a duplicate. Three findings, the first one fatal to shipping this as-is.
