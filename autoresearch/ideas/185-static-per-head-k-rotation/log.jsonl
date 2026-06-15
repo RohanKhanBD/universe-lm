@@ -10,3 +10,4 @@
 {"ts":"2026-06-15T07:56:01Z","agent":"code-impl","idea":"185-static-per-head-k-rotation","from":"recoding","to":"needs-run","round":2,"note":"build-smoke verified locally (SMOKE_OK, step-0 byte-identity 0.0); prior bounce was transient config-import race, code already correct"}
 {"ts":"2026-06-15T07:57:29Z","agent":"daemon","idea":"185-static-per-head-k-rotation","from":"needs-run","to":"running","round":2,"note":"claimed: queued by daemon"}
 {"ts":"2026-06-15T07:57:41Z","agent":"daemon","idea":"185-static-per-head-k-rotation","from":"running","to":"needs-recode","round":2,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MStaticKRotationConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}
+{"ts":"2026-06-15T08:11:32Z","agent":"implement-button","idea":"185-static-per-head-k-rotation","from":"needs-recode","to":"implementing","round":2,"note":"recode: claimed to fix import error"}
