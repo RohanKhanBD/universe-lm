@@ -116,9 +116,10 @@ path bit-identical, no extra parameters).
 forward is bit-identical to the 500k-base RoPE baseline at step 0
 (max-abs-diff = 0.0).
 
-**Run command** (matches the orchestrator convention, tiny1m3m seed 42):
+**Run command** (RUN-CONTRACT shape — the daemon launches `python <arq_file>`
+from `run.json`; never a freeform CLI):
 ```bash
-/venv/main/bin/python scripts/train.py --config-name tiny1m3m_xpos
+/venv/main/bin/python _arq_174-xpos-decay.py   # __main__ → train_llm.main(), seed 42
 ```
 
 Final val loss is read from the run's `val/loss` JSONL key (or

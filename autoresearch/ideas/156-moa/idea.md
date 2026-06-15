@@ -46,10 +46,10 @@ A win would tell us the *attention output* (not softmax variant, not residual st
 - Combined: `out = 1·attn_output_0 + 0·0 = attn_output_0` byte-identical to single standard attention at step 0.
 - Router weight and bias are stored as raw `nn.Parameter` (not `nn.Linear`) so the construction does NOT consume RNG — keeping the RNG state aligned with the no-flag path (verified: max-abs-diff < 1e-6 at step 0 for E=2, 4, 8).
 
-**Run command**:
+**Run command** (RUN-CONTRACT shape — the daemon launches `python <arq_file>`
+from `run.json`; never a freeform CLI):
 ```bash
-/venv/main/bin/python /root/universe-lm/scripts/train.py \
-  --config_class Tiny1M3MMoAConfig --seed 42
+/venv/main/bin/python _arq_156-moa.py   # __main__ → train_llm.main(), seed 42
 ```
 
 **Final val loss**: read from `tiny1m3m_moa_run_*/log.jsonl` or the eval-milestones block; compare to the cached baseline mean of 6.4302 ± 0.04.
