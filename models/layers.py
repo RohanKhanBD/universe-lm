@@ -830,6 +830,15 @@ class MultiHeadAttention(nn.Module):
         # temp_schedule` for the committed `α = -0.3` value.
         use_block_temp_schedule: bool = False,
         block_temp_alpha: float = 0.0,
+        # 193 — Per-block precomputed temperature scalar `tau_b ∈ R^1`
+        # (the model passes this in; shape `[1]` Buffer is registered
+        # when `use_block_temp_schedule=True`). Ignored when the flag
+        # is off. See the buffer-registration comment in
+        # `MultiHeadAttention.__init__` and the per-block schedule
+        # formula in `configs/llm_config.LLMConfig.use_block_temp_
+        # schedule`. See
+        # `autoresearch/ideas/193-blockwise-attn-temp-schedule/idea.md`.
+        tau_b: float = 1.0,
         # 161 — Per-layer learnable attention temperature. The actual
         # parameter `layer_temperature ∈ R^{n_layers}` lives on the
         # MODEL (`MinimalLLM`); each MHA reads `layer_temperature
@@ -2284,6 +2293,31 @@ class MultiHeadAttention(nn.Module):
         # identical. See `autoresearch/ideas/195-qk-clamp-min-max/idea.md`.
         self.use_qk_clamp = use_qk_clamp
         self.qk_clamp_c = float(qk_clamp_c)
+        # 193 — Blockwise attention temperature schedule (fixed
+        # cosine-depth, no learned params). `tau_b` is the per-block
+        # multiplicative scalar on the pre-softmax attention scores
+        # (`scores_b = Q_b K_b^T / (tau_b · √d_k)`), precomputed by
+        # the model (`MinimalLLM`) as
+        # `tau_b = 1 + α · cos(π · b / (L − 1))` for block `b ∈
+        # [0, L-1]` and stored as a non-Parameter `Buffer` of shape
+        # `[1]` on the MHA. Default off → no Buffer registered, no
+        # branch taken, baseline path bit-identical. The per-forward
+        # cost (when on) is one elementwise divide on `[B, H, T, T]`
+        # per block, reading one scalar — negligible vs the QK^T
+        # matmul. Distinct from 188 (per-block *learned* scalar on
+        # the same axis — 193 is the *fixed-shape* control), 155
+        # (per-head learned scalar), 161 (per-layer learned scalar).
+        # Forces the manual attention path so SDPA's flash kernel
+        # doesn't fuse QK^T+softmax+AV (the pre-softmax score must
+        # be exposed for the divide). See
+        # `autoresearch/ideas/193-blockwise-attn-temp-schedule/
+        # idea.md` for the `α = -0.3` commitment and the
+        # sharpen-early-soften-late sign convention.
+        self.use_block_temp_schedule = use_block_temp_schedule
+        if use_block_temp_schedule:
+            self.register_buffer(
+                "tau_b", torch.tensor(float(tau_b), dtype=torch.float32)
+            )
         # 161 — Per-layer learnable attention temperature `τ_l ∈ R^1`.
         # Stored on the MODEL (`MinimalLLM.layer_temperature`) — each
         # MHA reads its own slice `layer_temperature[layer_index]` at
@@ -5358,6 +5392,20 @@ class TransformerBlock(nn.Module):
         use_dropconnect_wo: bool = False,
         dropconnect_wo_rate: float = 0.0,
         dropconnect_wo_warmup_steps: int = 100,
+        # 207 — W_O Low-Rank Bottleneck (learnable rank-r residual
+        # correction on the W_O projection). Pass-through to the
+        # inner MHA. See `MultiHeadAttention.use_lowrank_wo` for the
+        # mechanism (`W_O_eff = W_O + σ(α) · (W_O_A @ W_O_B)`, with
+        # `W_O_B` zero-init and `α` init −10 ⇒ step-0 bit-identical
+        # to baseline). `wo_rank` (default 16) sets the absolute rank
+        # of the correction; `wo_lowrank_alpha_init` (default −10)
+        # sets the soft-gate init. Default off → no Parameter
+        # registered, baseline path bit-identical. See
+        # `autoresearch/ideas/207-wo-lowrank-bottleneck/idea.md` /
+        # `plan.md`.
+        use_lowrank_wo: bool = False,
+        wo_rank: int = 16,
+        wo_lowrank_alpha_init: float = -10.0,
         # 151 — RoV (Rotary Value Embeddings, gated). Pass-through to
         # the inner MHA. See `MultiHeadAttention.use_rov` for the
         # mechanism. Default off → baseline path bit-identical. See
@@ -5445,6 +5493,22 @@ class TransformerBlock(nn.Module):
         # cascade runs unchanged, baseline forward graph bit-
         # identical. See `autoresearch/ideas/170-swiglu-ffn/idea.md`.
         use_swiglu_ffn: bool = False,
+        # 196 — MishGLU FFN (Misra 2019 + Shazeer 2020 composition;
+        # inner-activation axis orthogonal to 170's outer-GLU axis).
+        # Three-projection gated linear unit with `mish` as the inner
+        # gate activation (instead of 170's `silu`). `mish(0)=0` ⇒
+        # step-0 forward is silent without an explicit zero-init (and
+        # a zero-init would mask the gradient signal the lever
+        # depends on — `dMish/dx|_{x=0} ≈ 0.6` vs `dSiLU/dx|_{x=0}
+        # = 0.5` is the lever). d_ff is scaled by the Shazeer 2/3
+        # trick (`(2 * d_ff) // 3`) so total FFN param count matches
+        # SwiGLU to within ~0.4%. Default off → the standard
+        # `ffn_variant` cascade runs unchanged, baseline forward
+        # graph bit-identical. Mutually exclusive with `use_swiglu_ffn`
+        # (both target the FFN slot) — branch sits AHEAD of 170 so
+        # the new lever isn't silently shadowed. See
+        # `autoresearch/ideas/196-ffn-glu-mish/idea.md`.
+        use_mish_glu: bool = False,
         # 198 — Pre-FFN Attention Mixing (FiLM-style cross-stream
         # conditioning; Perez et al. 2018, arXiv:1709.07871). When
         # True, the block registers a 0-dim scalar
@@ -5983,6 +6047,17 @@ class TransformerBlock(nn.Module):
             use_dropconnect_wo=use_dropconnect_wo,
             dropconnect_wo_rate=dropconnect_wo_rate,
             dropconnect_wo_warmup_steps=dropconnect_wo_warmup_steps,
+            # 207 — W_O Low-Rank Bottleneck pass-through to the inner
+            # MHA. See `MultiHeadAttention.use_lowrank_wo` for the
+            # mechanism (rank-r residual correction
+            # `W_O_eff = W_O + σ(α)·(W_O_A @ W_O_B)`, W_O_B zero-init
+            # ⇒ step-0 bit-identical). Default off → baseline path
+            # bit-identical. See
+            # `autoresearch/ideas/207-wo-lowrank-bottleneck/idea.md`
+            # / `plan.md`.
+            use_lowrank_wo=use_lowrank_wo,
+            wo_rank=wo_rank,
+            wo_lowrank_alpha_init=wo_lowrank_alpha_init,
             # 151 — RoV pass-through to the inner MHA. Default off
             # → baseline path bit-identical. See
             # `autoresearch/ideas/151-rov-gated/idea.md`.
@@ -6190,6 +6265,53 @@ class TransformerBlock(nn.Module):
             # baseline path runs bit-identical. See
             # `autoresearch/ideas/153-relu2-ffn/idea.md`.
             self.feed_forward = ReLU2FeedForward(d_model, d_ff, dropout)
+        elif use_mish_glu:
+            # 196 — MishGLU FFN (Misra 2019 + Shazeer 2020
+            # composition; inner-activation axis orthogonal to 170's
+            # outer-GLU axis). Three-projection gated linear unit
+            # `y = down_proj(mish(W_gate·x) ⊙ (W_up·x))` —
+            # structurally identical to 170's
+            # SwiGLUZeroInitFeedForward *except* the gate activation
+            # is `mish` (`x * tanh(softplus(x))`, Misra 2019) instead
+            # of `silu`. `mish(0) = 0` ⇒ step-0 forward is silent
+            # without an explicit zero-init (and a zero-init would
+            # mask the gradient signal the lever depends on).
+            # d_ff is scaled by the Shazeer 2/3 trick
+            # (`d_ff_swiglu = (2 * d_ff) // 3`, 170 for
+            # d_ff_baseline=256) so total FFN param count matches
+            # SwiGLU to within ~0.4%. Branch sits AHEAD of 170
+            # (use_swiglu_ffn) and every other FFN-replacement flag
+            # so the inner-activation lever isn't silently shadowed
+            # when more than one FFN-replacement flag is set.
+            # Default off → the standard `ffn_variant` cascade runs
+            # bit-identical to baseline. See
+            # `autoresearch/ideas/196-ffn-glu-mish/idea.md`.
+            # Mutual-exclusion guard: 170 (SwiGLU) and 196 (MishGLU)
+            # both target the FFN slot with different inner
+            # activations; failing loud here catches misuse at
+            # construction rather than at training time.
+            assert not (use_soft_moe or use_switch_ffn or use_ttt_ffn), (
+                "use_mish_glu (196) is mutually exclusive with "
+                "use_soft_moe (117) / use_switch_ffn (146) / use_ttt_ffn: "
+                "all three replace the FFN with their own module, so they "
+                "shadow 196's gate."
+            )
+            assert not use_swiglu_ffn, (
+                "use_mish_glu (196) is mutually exclusive with "
+                "use_swiglu_ffn (170): both target the FFN slot. "
+                "Pick one — 196 tests the inner-activation axis (Mish "
+                "vs SiLU gate), 170 tests the outer-GLU axis."
+            )
+            assert ffn_variant != "swiglu", (
+                "use_mish_glu (196) is mutually exclusive with "
+                "ffn_variant='swiglu' (legacy 2-projection SwiGLU without "
+                "zero-init gate) — pick one. The branch ordering silently "
+                "wins by 196."
+            )
+            d_ff_mish = (2 * d_ff) // 3
+            self.feed_forward = MishGLUFeedForward(
+                d_model, d_ff_mish, dropout
+            )
         elif use_swiglu_ffn:
             # 170 — SwiGLU FFN (Shazeer 2020, arXiv:2002.05202;
             # LLaMA-family FFN). Three-projection gated linear unit
@@ -6358,6 +6480,23 @@ class TransformerBlock(nn.Module):
         if self.use_re_zero:
             self.re_zero_alpha_attn = nn.Parameter(torch.zeros(1))
             self.re_zero_alpha_ffn = nn.Parameter(torch.zeros(1))
+        # 197 — DeepNet α fixed residual init (Wang et al. 2022,
+        # arXiv:2203.00555). A single *fixed* (not learned) global
+        # scalar `α = (2·n_layers)^(-1/2)` applied to every block's
+        # sublayer output before the residual add. The fixed form
+        # bounds the residual stream's magnitude to `O(1)` at every
+        # depth (vs `√L` un-scaled). 0 new params — `α` is a Python
+        # float computed once at construction. The lever is a
+        # different *operating point* from baseline (not a
+        # perturbation), so the forward is intentionally NOT
+        # step-0 byte-identical when the flag is ON (the bounded
+        # regime is the whole point). Default off → the
+        # `self.deepnet_alpha` attribute is still set (to ~0.204
+        # at L=12) but the `self.use_deepnet_alpha` flag is the
+        # gate that determines whether the multiply runs (the
+        # baseline path is bit-identical when the flag is off).
+        self.use_deepnet_alpha = use_deepnet_alpha
+        self.deepnet_alpha = float((2.0 * max(1, int(n_layers))) ** -0.5)
         # 198 — Pre-FFN Attention Mixing. One 0-dim scalar per block
         # `pre_ffn_attn_mix_gamma_raw`, init `pre_ffn_attn_mix_init`
         # (default −10 ⇒ sigmoid(γ_raw) ≈ 4.5e-5 at step 0). Mirrors

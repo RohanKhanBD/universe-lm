@@ -5,16 +5,84 @@ from typing import Tuple, Optional
 
 
 class SquaredReLUFeedForward(nn.Module):
-    """Squared ReLU FeedForward layer (Primer-style)"""
+    """Squared ReLU FeedForward layer (Primer-style)
+
+    # 206 — Cross-Block W_up / W_down Projection Sharing
+    # (Universal-Transformers-style learnable parameter sharing
+    # across depth, narrowed to the two largest FFN matrices only —
+    # Dehghani et al. ICLR 2019 / Lan et al. ALBERT 2020). When
+    # the per-block `ffn_share_alpha_up` / `ffn_share_alpha_down`
+    # scalars are registered (set by `TransformerBlock` when
+    # `use_cross_block_ffn_share=True`), `forward` blends the
+    # block's own W_up / W_down with the previous block's detached
+    # copies via `α = σ(α_raw)` (init -10 ⇒ `σ(-10) ≈ 4.5e-5`):
+    #   `W_up_eff   = (1 - α_up)   · W_up_self   + α_up   · prev_W_up.detach()`
+    #   `W_down_eff = (1 - α_down) · W_down_self + α_down · prev_W_down.detach()`
+    # At step 0 `α ≈ 4.5e-5` ⇒ `W_eff ≈ W_self` bit-identical to
+    # the no-flag baseline within fp32 noise of one extra multiply-
+    # add. `prev_W_up` / `prev_W_down` are `.detach()`-ed at the
+    # call site so the cross-block gradient is bounded to the 2
+    # α scalars per block. When the flag is off (default) the
+    # blend branch is gated on `self.ffn_share_alpha_up is not None`
+    # and the baseline forward is bit-identical. See
+    # `autoresearch/ideas/206-cross-block-ffn-share/idea.md` /
+    # `plan.md`.
+    """
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
         self.up_proj = nn.Linear(d_model, d_ff, bias=False)
         self.down_proj = nn.Linear(d_ff, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
+        # 206 — Cross-Block FFN share α scalars. None by default
+        # (gate is off); `TransformerBlock` registers two
+        # `nn.Parameter` scalars here when `use_cross_block_ffn_share
+        # =True`. Stash slots are also None; the model loop writes
+        # the layer-0 W_up / W_down `.detach()`-ed copies into
+        # `_prev_W_up` / `_prev_W_down` after the first block.
+        self.ffn_share_alpha_up = None
+        self.ffn_share_alpha_down = None
+        self._prev_W_up = None
+        self._prev_W_down = None
 
-    def forward(self, x):
-        # Activation is (max(0, x))^2
-        return self.down_proj(self.dropout(torch.square(F.relu(self.up_proj(x)))))
+    def forward(self, x, prev_W_up=None, prev_W_down=None):
+        # 206 — Cross-Block FFN share. When the α scalars are
+        # registered AND the model loop has passed `prev_W_up` /
+        # `prev_W_down` (i.e. layer l ≥ 1), blend the FFN's W_up /
+        # W_down with the previous block's detached copies. The
+        # blend branch is gated on the α Parameter, not on a kwarg,
+        # so a flag-off FFN instance never enters this branch (the
+        # baseline path is bit-identical). On layer 0 the model
+        # loop passes `prev_W_up=None` and the branch is skipped.
+        if (
+            self.ffn_share_alpha_up is not None
+            and prev_W_up is not None
+        ):
+            alpha_up = torch.sigmoid(self.ffn_share_alpha_up)
+            W_up_eff = (1.0 - alpha_up) * self.up_proj.weight + alpha_up * prev_W_up
+            h = F.linear(x, W_up_eff)
+        else:
+            h = self.up_proj(x)
+        h = torch.square(F.relu(h))
+        if (
+            self.ffn_share_alpha_down is not None
+            and prev_W_down is not None
+        ):
+            alpha_down = torch.sigmoid(self.ffn_share_alpha_down)
+            W_down_eff = (1.0 - alpha_down) * self.down_proj.weight + alpha_down * prev_W_down
+            out = F.linear(self.dropout(h), W_down_eff)
+        else:
+            out = self.down_proj(self.dropout(h))
+        # Always stash the *current* block's W_up / W_down
+        # (detached) so the model loop can read them for the next
+        # block's `prev_W_up=` / `prev_W_down=`. Mirrors the
+        # `q_carry=` / `v_residual=` / `av_carry=` / 188's
+        # `prev_W_K=` / `prev_W_V=` stash pattern. Stash is a no-op
+        # when the flag is off (the model loop ignores None).
+        if self.ffn_share_alpha_up is not None:
+            self._prev_W_up = self.up_proj.weight.detach()
+        if self.ffn_share_alpha_down is not None:
+            self._prev_W_down = self.down_proj.weight.detach()
+        return out
 
 
 class ReLU2FeedForward(nn.Module):
@@ -30,16 +98,55 @@ class ReLU2FeedForward(nn.Module):
     At init with normal-distributed pre-activations both
     formulations produce zero-mean, similar-variance outputs.
     See `autoresearch/ideas/153-relu2-ffn/idea.md`.
+
+    # 206 — Cross-Block W_up / W_down projection sharing
+    # support. Same shape and blend discipline as
+    # `SquaredReLUFeedForward` above (the lever is structurally
+    # identical; only the activation differs). When the α scalars
+    # are registered (set by `TransformerBlock` when
+    # `use_cross_block_ffn_share=True`), `forward` blends W_up,
+    # W_down with the previous block's detached copies. See the
+    # `SquaredReLUFeedForward` docstring for the full mechanism.
     """
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
         self.up_proj = nn.Linear(d_model, d_ff, bias=False)
         self.down_proj = nn.Linear(d_ff, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
+        # 206 — α scalars + stash slots (None by default).
+        self.ffn_share_alpha_up = None
+        self.ffn_share_alpha_down = None
+        self._prev_W_up = None
+        self._prev_W_down = None
 
-    def forward(self, x):
-        h = self.up_proj(x)
-        return self.down_proj(self.dropout(h * F.relu(h)))
+    def forward(self, x, prev_W_up=None, prev_W_down=None):
+        # 206 — W_up blend (mirrors SquaredReLUFeedForward).
+        if (
+            self.ffn_share_alpha_up is not None
+            and prev_W_up is not None
+        ):
+            alpha_up = torch.sigmoid(self.ffn_share_alpha_up)
+            W_up_eff = (1.0 - alpha_up) * self.up_proj.weight + alpha_up * prev_W_up
+            h = F.linear(x, W_up_eff)
+        else:
+            h = self.up_proj(x)
+        h = h * F.relu(h)
+        if (
+            self.ffn_share_alpha_down is not None
+            and prev_W_down is not None
+        ):
+            alpha_down = torch.sigmoid(self.ffn_share_alpha_down)
+            W_down_eff = (1.0 - alpha_down) * self.down_proj.weight + alpha_down * prev_W_down
+            out = F.linear(self.dropout(h), W_down_eff)
+        else:
+            out = self.down_proj(self.dropout(h))
+        # Stash current W_up / W_down for the next block (mirrors
+        # SquaredReLUFeedForward).
+        if self.ffn_share_alpha_up is not None:
+            self._prev_W_up = self.up_proj.weight.detach()
+        if self.ffn_share_alpha_down is not None:
+            self._prev_W_down = self.down_proj.weight.detach()
+        return out
 
 
 class SaturatingReLUFeedForward(nn.Module):
@@ -48,33 +155,104 @@ class SaturatingReLUFeedForward(nn.Module):
     This replaces the square with a smooth soft-cap: c * tanh(relu(x) / c).
     Linear for small activations (preserves signal), saturating at +c for
     large ones (compresses outliers at their source). c is a learnable scalar
-    (init 4). Same 2-projection shape/param-count as squared_relu."""
+    (init 4). Same 2-projection shape/param-count as squared_relu.
+
+    # 206 — Cross-Block W_up / W_down projection sharing
+    # support. Same blend discipline as SquaredReLUFeedForward.
+    """
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
         self.up_proj = nn.Linear(d_model, d_ff, bias=False)
         self.down_proj = nn.Linear(d_ff, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
         self.cap = nn.Parameter(torch.tensor(4.0))
+        # 206 — α scalars + stash slots (None by default).
+        self.ffn_share_alpha_up = None
+        self.ffn_share_alpha_down = None
+        self._prev_W_up = None
+        self._prev_W_down = None
 
-    def forward(self, x):
-        h = F.relu(self.up_proj(x))
+    def forward(self, x, prev_W_up=None, prev_W_down=None):
+        # 206 — W_up blend.
+        if (
+            self.ffn_share_alpha_up is not None
+            and prev_W_up is not None
+        ):
+            alpha_up = torch.sigmoid(self.ffn_share_alpha_up)
+            W_up_eff = (1.0 - alpha_up) * self.up_proj.weight + alpha_up * prev_W_up
+            h = F.relu(F.linear(x, W_up_eff))
+        else:
+            h = F.relu(self.up_proj(x))
         c = self.cap.abs() + 1e-4
         h = c * torch.tanh(h / c)
-        return self.down_proj(self.dropout(h))
+        if (
+            self.ffn_share_alpha_down is not None
+            and prev_W_down is not None
+        ):
+            alpha_down = torch.sigmoid(self.ffn_share_alpha_down)
+            W_down_eff = (1.0 - alpha_down) * self.down_proj.weight + alpha_down * prev_W_down
+            out = F.linear(self.dropout(h), W_down_eff)
+        else:
+            out = self.down_proj(self.dropout(h))
+        if self.ffn_share_alpha_up is not None:
+            self._prev_W_up = self.up_proj.weight.detach()
+        if self.ffn_share_alpha_down is not None:
+            self._prev_W_down = self.down_proj.weight.detach()
+        return out
 
 
 class SwiGLUFeedForward(nn.Module):
-    """SwiGLU FeedForward layer."""
+    """SwiGLU FeedForward layer.
+
+    # 206 — Cross-Block W_up / W_down projection sharing
+    # support. W_gate stays per-block (the gating decision is a
+    # per-block axis; only the FFN's expansion / compression
+    # subspace is shared across depth). When the α scalars are
+    # registered (set by `TransformerBlock` when
+    # `use_cross_block_ffn_share=True`), `forward` blends W_up,
+    # W_down with the previous block's detached copies. W_gate
+    # is always the block's own projection. See
+    # `autoresearch/ideas/206-cross-block-ffn-share/idea.md` /
+    # `plan.md`.
+    """
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
         self.up_proj = nn.Linear(d_model, d_ff, bias=False)
         self.gate_proj = nn.Linear(d_model, d_ff, bias=False)
         self.down_proj = nn.Linear(d_ff, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
+        # 206 — α scalars + stash slots (None by default).
+        self.ffn_share_alpha_up = None
+        self.ffn_share_alpha_down = None
+        self._prev_W_up = None
+        self._prev_W_down = None
 
-    def forward(self, x):
-        hidden = F.silu(self.gate_proj(x)) * self.up_proj(x)
-        return self.down_proj(self.dropout(hidden))
+    def forward(self, x, prev_W_up=None, prev_W_down=None):
+        # 206 — W_up blend (gate stays per-block).
+        if (
+            self.ffn_share_alpha_up is not None
+            and prev_W_up is not None
+        ):
+            alpha_up = torch.sigmoid(self.ffn_share_alpha_up)
+            W_up_eff = (1.0 - alpha_up) * self.up_proj.weight + alpha_up * prev_W_up
+            hidden = F.silu(self.gate_proj(x)) * F.linear(x, W_up_eff)
+        else:
+            hidden = F.silu(self.gate_proj(x)) * self.up_proj(x)
+        if (
+            self.ffn_share_alpha_down is not None
+            and prev_W_down is not None
+        ):
+            alpha_down = torch.sigmoid(self.ffn_share_alpha_down)
+            W_down_eff = (1.0 - alpha_down) * self.down_proj.weight + alpha_down * prev_W_down
+            out = F.linear(self.dropout(hidden), W_down_eff)
+        else:
+            out = self.down_proj(self.dropout(hidden))
+        # Stash current W_up / W_down for the next block.
+        if self.ffn_share_alpha_up is not None:
+            self._prev_W_up = self.up_proj.weight.detach()
+        if self.ffn_share_alpha_down is not None:
+            self._prev_W_down = self.down_proj.weight.detach()
+        return out
 
 
 def mish(x: torch.Tensor) -> torch.Tensor:
@@ -121,10 +299,37 @@ class MishGLUFeedForward(nn.Module):
         self.gate_proj = nn.Linear(d_model, d_ff, bias=False)
         self.down_proj = nn.Linear(d_ff, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
+        # 206 — α scalars + stash slots (None by default).
+        self.ffn_share_alpha_up = None
+        self.ffn_share_alpha_down = None
+        self._prev_W_up = None
+        self._prev_W_down = None
 
-    def forward(self, x):
-        hidden = mish(self.gate_proj(x)) * self.up_proj(x)
-        return self.down_proj(self.dropout(hidden))
+    def forward(self, x, prev_W_up=None, prev_W_down=None):
+        # 206 — W_up blend (gate stays per-block).
+        if (
+            self.ffn_share_alpha_up is not None
+            and prev_W_up is not None
+        ):
+            alpha_up = torch.sigmoid(self.ffn_share_alpha_up)
+            W_up_eff = (1.0 - alpha_up) * self.up_proj.weight + alpha_up * prev_W_up
+            hidden = mish(self.gate_proj(x)) * F.linear(x, W_up_eff)
+        else:
+            hidden = mish(self.gate_proj(x)) * self.up_proj(x)
+        if (
+            self.ffn_share_alpha_down is not None
+            and prev_W_down is not None
+        ):
+            alpha_down = torch.sigmoid(self.ffn_share_alpha_down)
+            W_down_eff = (1.0 - alpha_down) * self.down_proj.weight + alpha_down * prev_W_down
+            out = F.linear(self.dropout(hidden), W_down_eff)
+        else:
+            out = self.down_proj(self.dropout(hidden))
+        if self.ffn_share_alpha_up is not None:
+            self._prev_W_up = self.up_proj.weight.detach()
+        if self.ffn_share_alpha_down is not None:
+            self._prev_W_down = self.down_proj.weight.detach()
+        return out
 
 
 class SwiGLUZeroInitFeedForward(nn.Module):
@@ -174,10 +379,41 @@ class SwiGLUZeroInitFeedForward(nn.Module):
         # is gated out by `silu(0)=0` until the gate grows).
         with torch.no_grad():
             nn.init.zeros_(self.gate_proj.weight)
+        # 206 — α scalars + stash slots (None by default; registered
+        # by TransformerBlock when use_cross_block_ffn_share=True).
+        self.ffn_share_alpha_up = None
+        self.ffn_share_alpha_down = None
+        self._prev_W_up = None
+        self._prev_W_down = None
 
-    def forward(self, x):
-        hidden = F.silu(self.gate_proj(x)) * self.up_proj(x)
-        return self.down_proj(self.dropout(hidden))
+    def forward(self, x, prev_W_up=None, prev_W_down=None):
+        # 206 — W_up blend (gate stays per-block, gate is
+        # already zero-init so the FFN is silent at step 0 — the
+        # 206 blend is dead at step 0 anyway because the
+        # contribution to FFN output is gated out by silu(0)=0).
+        if (
+            self.ffn_share_alpha_up is not None
+            and prev_W_up is not None
+        ):
+            alpha_up = torch.sigmoid(self.ffn_share_alpha_up)
+            W_up_eff = (1.0 - alpha_up) * self.up_proj.weight + alpha_up * prev_W_up
+            hidden = F.silu(self.gate_proj(x)) * F.linear(x, W_up_eff)
+        else:
+            hidden = F.silu(self.gate_proj(x)) * self.up_proj(x)
+        if (
+            self.ffn_share_alpha_down is not None
+            and prev_W_down is not None
+        ):
+            alpha_down = torch.sigmoid(self.ffn_share_alpha_down)
+            W_down_eff = (1.0 - alpha_down) * self.down_proj.weight + alpha_down * prev_W_down
+            out = F.linear(self.dropout(hidden), W_down_eff)
+        else:
+            out = self.down_proj(self.dropout(hidden))
+        if self.ffn_share_alpha_up is not None:
+            self._prev_W_up = self.up_proj.weight.detach()
+        if self.ffn_share_alpha_down is not None:
+            self._prev_W_down = self.down_proj.weight.detach()
+        return out
 
 
 class GELUFeedForward(nn.Module):
@@ -189,12 +425,46 @@ class GELUFeedForward(nn.Module):
     # activation is itself a real architecture lever — a question we
     # haven't cleanly answered yet because SwiGLU and squared_relu
     # differ in BOTH activation and number of projections.
+
+    # 206 — Cross-Block W_up / W_down projection sharing
+    # support. Same blend discipline as SquaredReLUFeedForward
+    # (only the activation differs). See that class's docstring
+    # for the full mechanism.
     """
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
         super().__init__()
         self.up_proj = nn.Linear(d_model, d_ff, bias=False)
         self.down_proj = nn.Linear(d_ff, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
+        # 206 — α scalars + stash slots (None by default).
+        self.ffn_share_alpha_up = None
+        self.ffn_share_alpha_down = None
+        self._prev_W_up = None
+        self._prev_W_down = None
 
-    def forward(self, x):
-        return self.down_proj(self.dropout(F.gelu(self.up_proj(x))))
+    def forward(self, x, prev_W_up=None, prev_W_down=None):
+        # 206 — W_up blend.
+        if (
+            self.ffn_share_alpha_up is not None
+            and prev_W_up is not None
+        ):
+            alpha_up = torch.sigmoid(self.ffn_share_alpha_up)
+            W_up_eff = (1.0 - alpha_up) * self.up_proj.weight + alpha_up * prev_W_up
+            h = F.linear(x, W_up_eff)
+        else:
+            h = self.up_proj(x)
+        h = F.gelu(h)
+        if (
+            self.ffn_share_alpha_down is not None
+            and prev_W_down is not None
+        ):
+            alpha_down = torch.sigmoid(self.ffn_share_alpha_down)
+            W_down_eff = (1.0 - alpha_down) * self.down_proj.weight + alpha_down * prev_W_down
+            out = F.linear(self.dropout(h), W_down_eff)
+        else:
+            out = self.down_proj(self.dropout(h))
+        if self.ffn_share_alpha_up is not None:
+            self._prev_W_up = self.up_proj.weight.detach()
+        if self.ffn_share_alpha_down is not None:
+            self._prev_W_down = self.down_proj.weight.detach()
+        return out

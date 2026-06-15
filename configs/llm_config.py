@@ -336,6 +336,28 @@ class LLMConfig:
     # (n_layers × 2 = 24 scalars at tiny1m3m; negligible). See
     # `autoresearch/ideas/130-rezero/idea.md`.
     use_re_zero: bool = False
+    # 197 — DeepNet α residual init (Wang et al. 2022,
+    # arXiv:2203.00555). Fixed (NOT learned) depth-conditional scalar
+    # `α = (2·n_layers)^(-1/2)` applied to every block's sublayer
+    # output (attention AND FFN) before the residual add. The fixed
+    # form bounds the residual stream's magnitude growth to `O(1)`
+    # throughout the network — at L=12 the per-block contribution
+    # scales by 1/√24 ≈ 0.204 so the residual stream's expected
+    # magnitude at the LM head is `(1-α^2·L) ≈ 0.71` of one block's
+    # contribution (vs `√L ≈ 3.5×` un-scaled). 0 new params
+    # (`α` is a Python float computed once at block construction
+    # from `n_layers`). Distinct from the closed learned per-block
+    # depth-conditional forms — 017 Sub-LN-sandwich (per-block
+    # LN), 111 drop-path (regularizer), 116 hyper-connections
+    # (multi-stream), 130 ReZero (per-block learned α, init 0),
+    # 142 LayerScale (per-channel learned γ, init 1e-4). 197 is
+    # the first *fixed* *global* scalar in the family. Step-0
+    # forward is NOT byte-identical to baseline by construction
+    # (the lever's purpose is the bounded regime from step 0) —
+    # this is the explicit trade documented in idea.md. Default
+    # off → baseline path bit-identical. See
+    # `autoresearch/ideas/197-output-residual-sqrt-2l/idea.md`.
+    use_deepnet_alpha: bool = False
     # #29 value embeddings (speedrun records 55/63): inject the (factorized) token
     # embedding into attention V at every layer via a tiny per-layer projection,
     # zero-inited so step 0 == baseline. Reuses the existing rank-r table as the
@@ -780,6 +802,29 @@ class LLMConfig:
     # (+0.003% of 0.94M). See
     # `autoresearch/ideas/188-cross-block-kv-share/idea.md`.
     use_cross_block_kv_share: bool = False
+    # 206 — Cross-Block W_up / W_down Projection Sharing (the
+    # FFN-side analog of 188, narrowed to the two largest FFN
+    # matrices only). Each block's `W_up_eff` and `W_down_eff`
+    # are learnable convex blends of the block's own
+    # (per-block) projection and the previous block's
+    # (detached) projection:
+    #   `W_up_eff   = (1 - σ(α_up_raw))   · W_up_self   + σ(α_up_raw)   · W_up_prev`
+    #   `W_down_eff = (1 - σ(α_down_raw)) · W_down_self + σ(α_down_raw) · W_down_prev`
+    # W_gate is LEFT PER-BLOCK (the gating decision is a per-block
+    # axis; only the FFN's expansion / compression subspace is
+    # shared across depth). Init `α_up_raw = α_down_raw = -10.0`
+    # ⇒ `σ(-10) ≈ 4.5e-5` ⇒ the blend is numerically dominated by
+    # `W_up_self` / `W_down_self` at step 0, so the FFN is bit-
+    # identical (within fp32 noise) to the no-flag baseline.
+    # `prev_W_up` / `prev_W_down` are `.detach()`-ed at the call
+    # site so the cross-block gradient is bounded to the 2 scalar
+    # α params per block. Default off → baseline path bit-
+    # identical (no Parameter registered, no stash, no blend).
+    # Cost: 2 scalars/block × 12 blocks = 24 (+0.003% of 0.94M).
+    # See `autoresearch/ideas/206-cross-block-ffn-share/idea.md` /
+    # `plan.md`.
+    use_cross_block_ffn_share: bool = False
+    ffn_share_alpha_init: float = -10.0
     # 204 — Cross-Block Attention Score Sharing (Sukhbaatar et al.
     # Memorizing Transformers ICLR 2022, arXiv:2203.08913 — within-
     # model cross-block score-reuse lever). Each block's attention
@@ -2558,6 +2603,57 @@ class Tiny1M3MReZeroConfig(Tiny1M3MConfig):
 
 
 @dataclass
+class Tiny1M3MDeepNetAlphaConfig(Tiny1M3MConfig):
+    """Tiny1M3M with DeepNet α fixed residual init (Wang et al. 2022,
+    arXiv:2203.00555, §3.1).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val
+    ≈6.40). At every block, the sublayer output (both attention
+    and FFN) is multiplied by a single global fixed scalar
+    `α = (2·n_layers)^(-1/2)` BEFORE the residual add:
+    `x = x + α·f(x)`. At tiny1m3m (L=12), `α = 1/√24 ≈ 0.2041`.
+    Bounding the residual stream's magnitude growth to `O(1)`
+    throughout the network: per-component residual growth drops
+    from `√L ≈ 3.5×` (un-scaled) to `√L·α ≈ 0.71` (scaled). The
+    LM head sees a well-conditioned input regardless of depth.
+
+    Distinct from the closed learned per-block depth-conditional
+    forms — 017 Sub-LN-sandwich (per-block LN), 111 drop-path
+    (regularizer), 116 hyper-connections (multi-stream), 130
+    ReZero (per-block learned α, init 0), 142 LayerScale
+    (per-channel learned γ, init 1e-4). 197 is the first
+    *fixed* *global* scalar in that family. Cost: 0 new params
+    (`α` is a Python float computed once at block construction
+    from `n_layers`).
+
+    Step-0 forward is NOT byte-identical to baseline by
+    construction — the lever's purpose is the bounded regime
+    from step 0 (a different operating point), not a
+    perturbation of the un-scaled form. This is the explicit
+    trade documented in `idea.md` (`trt_val` measures the
+    *operating-point* difference, not a perturbation of
+    baseline). The learned-per-block alternative is documented
+    in idea.md as a future variant if this fixed form proves
+    interesting.
+
+    Transfer-risk: low — DeepNet validates the lever at 200-1000
+    layers on machine translation and language modeling; Primer
+    (So et al. 2021) validates the *learned* analog at 100M-1.5B.
+    At 12L the absolute magnitude of the depth-drift being fixed
+    is small (√12 ≈ 3.5×, vs √200 ≈ 14× at the paper's scale)
+    so the lever's *expected effect* at our tier is
+    correspondingly smaller — but the *direction* is
+    theoretically supported.
+
+    NULL band |Δ| < 0.01. DRIFT > +0.01. PASS ≤ −0.005 AND
+    clears the two-ctrl rule. See
+    `autoresearch/ideas/197-output-residual-sqrt-2l/idea.md` /
+    `plan.md`.
+    """
+    use_deepnet_alpha: bool = True
+
+
+@dataclass
 class Tiny1M3MSWANConfig(Tiny1M3MConfig):
     """Tiny1M3M with SWAN on the matrix-weight slot."""
     use_swan: bool = True
@@ -2725,6 +2821,40 @@ class Tiny1M3MSwigluFFNConfig(Tiny1M3MConfig):
     `autoresearch/ideas/170-swiglu-ffn/idea.md`.
     """
     use_swiglu_ffn: bool = True
+
+
+@dataclass
+class Tiny1M3MMishGLUConfig(Tiny1M3MConfig):
+    """Tiny1M3M with MishGLU FFN (Misra 2019 + Shazeer 2020 composition).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val 6.4216
+    on the Vast V100 box; baseline cache 6.40 per
+    `autoresearch/baseline-cache.json`). Replaces the FFN with a
+    3-projection gated linear unit `y = down_proj(mish(W_gate·x) ⊙
+    (W_up·x))` via the `use_mish_glu` lever — structurally identical
+    to SwiGLU (170) but with the inner gate activation swapped from
+    `silu` to `mish`. Mish (`x * tanh(softplus(x))`) has a
+    non-monotonic region for `x < 0` and `dMish/dx|_{x=0} ≈ 0.6` vs
+    `dSiLU/dx|_{x=0} = 0.5` — a 20% origin-derivative advantage that
+    is the lever the optimizer exploits. d_ff is scaled by the
+    standard Shazeer 2/3 trick (`(2 * d_ff) // 3 = 170`) so total
+    FFN param count matches SwiGLU to within ~0.4% (32,640 vs
+    32,768). Default off → standard `ffn_variant` cascade runs
+    bit-identical to baseline; with `use_mish_glu=True` the new
+    branch sits AHEAD of every other FFN-replacement flag so the
+    lever isn't silently shadowed.
+
+    Transfer-risk: med. MishGLU is a *compositional* lever (Mish ×
+    GLU) — each component validated independently (Shazeer 2020 at
+    1.1B-3.9B T5; Misra 2019 at 30M-200M image classification), but
+    the composition has no published direct scale test. Orthogonal to
+    170-swiglu-ffn (closed NULL at tiny1m3m) on the *outer* axis;
+    196 tests the *inner-activation* axis — given a borderline-
+    engaged gate, does Mish or SiLU shape it better at 0.94M. NULL
+    band |Δ| ≤ 0.01. DRIFT > +0.01. PASS ≤ −0.005. See
+    `autoresearch/ideas/196-ffn-glu-mish/idea.md`.
+    """
+    use_mish_glu: bool = True
 
 
 @dataclass

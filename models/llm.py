@@ -283,6 +283,18 @@ class MinimalLLM(nn.Module):
         self.dropconnect_wo_warmup_steps = getattr(
             config, "dropconnect_wo_warmup_steps", 100
         )
+        # 207 — W_O Low-Rank Bottleneck. Learnable rank-r residual
+        # correction `W_O_eff = W_O + σ(α)·(W_O_A @ W_O_B)` with
+        # W_O_B zero-init and α init −10 ⇒ step-0 bit-identical to
+        # baseline. Pass-through to each block's MHA. Default off →
+        # baseline path bit-identical. See
+        # `autoresearch/ideas/207-wo-lowrank-bottleneck/idea.md` /
+        # `plan.md`.
+        self.use_lowrank_wo = getattr(config, "use_lowrank_wo", False)
+        self.wo_rank = int(getattr(config, "wo_rank", 16))
+        self.wo_lowrank_alpha_init = float(
+            getattr(config, "wo_lowrank_alpha_init", -10.0)
+        )
         # 151 — RoV (Rotary Value Embeddings, gated). When on, the
         # block's MHA applies the same rotary to V as to Q,K and
         # mixes via a per-block scalar `rov_gate` (init 0 ⇒
@@ -556,6 +568,11 @@ class MinimalLLM(nn.Module):
         # branch runs, baseline FFN path bit-identical. See
         # `autoresearch/ideas/170-swiglu-ffn/idea.md`.
         self.use_swiglu_ffn = getattr(config, "use_swiglu_ffn", False)
+        # 196 — MishGLU FFN (inner-activation axis orthogonal to 170's
+        # outer-GLU axis). Default off → standard `ffn_variant` branch
+        # runs, baseline FFN path bit-identical. See
+        # `autoresearch/ideas/196-ffn-glu-mish/idea.md`.
+        self.use_mish_glu = getattr(config, "use_mish_glu", False)
         # 198 — Pre-FFN Attention Mixing. Default off → no Parameter
         # registered per block, no forward branch taken, baseline
         # path bit-identical. See
@@ -850,6 +867,16 @@ class MinimalLLM(nn.Module):
                         use_dropconnect_wo=self.use_dropconnect_wo,
                         dropconnect_wo_rate=self.dropconnect_wo_rate,
                         dropconnect_wo_warmup_steps=self.dropconnect_wo_warmup_steps,
+                        # 207 — W_O Low-Rank Bottleneck pass-through
+                        # to the block. See
+                        # `MultiHeadAttention.use_lowrank_wo` for the
+                        # mechanism. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/207-wo-lowrank-bottleneck/idea.md`
+                        # / `plan.md`.
+                        use_lowrank_wo=self.use_lowrank_wo,
+                        wo_rank=self.wo_rank,
+                        wo_lowrank_alpha_init=self.wo_lowrank_alpha_init,
                         # 151 — RoV (Rotary Value Embeddings, gated):
                         # per-block scalar `rov_gate` mixes the rotary-
                         # rotated V into V via `V ← V + rov_gate·V_rot`.
@@ -1019,6 +1046,12 @@ class MinimalLLM(nn.Module):
                         # identical. See
                         # `autoresearch/ideas/170-swiglu-ffn/idea.md`.
                         use_swiglu_ffn=self.use_swiglu_ffn,
+                        # 196 — MishGLU FFN pass-through (inner-
+                        # activation axis orthogonal to 170's outer-
+                        # GLU axis). Default off → baseline FFN path
+                        # bit-identical. See
+                        # `autoresearch/ideas/196-ffn-glu-mish/idea.md`.
+                        use_mish_glu=self.use_mish_glu,
                         # 198 — Pre-FFN Attention Mixing pass-through
                         # to the YOCO upper-half block. Default off
                         # → baseline path bit-identical. See
@@ -1235,6 +1268,16 @@ class MinimalLLM(nn.Module):
                         use_dropconnect_wo=self.use_dropconnect_wo,
                         dropconnect_wo_rate=self.dropconnect_wo_rate,
                         dropconnect_wo_warmup_steps=self.dropconnect_wo_warmup_steps,
+                        # 207 — W_O Low-Rank Bottleneck pass-through
+                        # to the block. See
+                        # `MultiHeadAttention.use_lowrank_wo` for the
+                        # mechanism. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/207-wo-lowrank-bottleneck/idea.md`
+                        # / `plan.md`.
+                        use_lowrank_wo=self.use_lowrank_wo,
+                        wo_rank=self.wo_rank,
+                        wo_lowrank_alpha_init=self.wo_lowrank_alpha_init,
                         # 151 — RoV (Rotary Value Embeddings, gated):
                         # per-block scalar `rov_gate` mixes the rotary-
                         # rotated V into V via `V ← V + rov_gate·V_rot`.
@@ -1401,6 +1444,12 @@ class MinimalLLM(nn.Module):
                         # block. Default off → FFN path bit-identical.
                         # See `autoresearch/ideas/170-swiglu-ffn/idea.md`.
                         use_swiglu_ffn=self.use_swiglu_ffn,
+                        # 196 — MishGLU FFN pass-through (inner-
+                        # activation axis orthogonal to 170's outer-
+                        # GLU axis). Default off → baseline FFN path
+                        # bit-identical. See
+                        # `autoresearch/ideas/196-ffn-glu-mish/idea.md`.
+                        use_mish_glu=self.use_mish_glu,
                         # 198 — Pre-FFN Attention Mixing pass-through
                         # to the standard block. Default off →
                         # baseline path bit-identical. See
