@@ -25,3 +25,4 @@
 {"ts":"2026-06-15T07:10:59Z","agent":"daemon","idea":"178-mqa-gated","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MMQAGatedConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}
 {"ts":"2026-06-15T07:10:59Z","agent":"auto-implement","idea":"178-mqa-gated","from":"needs-recode","to":"needs-review","round":1,"note":"auto-fix gave up after 5 failed runs — needs a human"}
 {"ts":"2026-06-15T07:11:04Z","agent":"auto-implement","idea":"178-mqa-gated","from":"needs-review","to":"rejected","round":1,"note":"auto-rejected: blocked 3x with no path forward (see log)"}
+{"ts":"2026-06-15T07:23:38Z","agent":"human","idea":"178-mqa-gated","from":"rejected","to":"needs-run","round":1,"note":"re-queue: was rejected on a code-sync bug (config class missing on box), not a real failure; box now has the code"}
