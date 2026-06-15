@@ -3,7 +3,7 @@ DEGRADED — w_158 stuck at 10.7m on idea 158-gau while 4 ideas sit in needs-run
 
 ## Active now
 - **w_158** — 158-gau, status `planning`, age **643s (~10.7m, stale)**, still grepping `use_v_mix_conv` references
-- **lab-autorun** — MiniMax triage agent, grepping for needs-run / running statuses (not training yet)
+- **lab-drain** — deterministic GPU drain daemon (queue-daemon.sh --loop); no LLM in the loop
 - **lab-implement-161-dyt-temp, lab-implement-163-v-mix-conv** — implementer panes idle
 - **lab-monitor** — health daemon
 

@@ -47,7 +47,11 @@ while [ $# -gt 0 ]; do case "$1" in
   *) echo "unknown arg: $1" >&2; exit 2;;
 esac; shift; done
 
-log() { echo "[daemon $(date -u +%H:%M:%S)] $*"; }
+# Diagnostics go to stderr — claimable()/sync_and_smoke() return their batch on
+# stdout via command substitution, so any log/flip line on stdout would be
+# swallowed into the batch and emitted as a garbage `run …` job. Keep stdout
+# clean for data only.
+log() { echo "[daemon $(date -u +%H:%M:%S)] $*" >&2; }
 
 # ── box (parsed once per tick from remote-box.json) ──────────────────────────
 HOST=""; PORT=""; SSHUSER=""; REMOTE_REPO=""; REMOTE_VENV=""
@@ -80,7 +84,11 @@ PY
 # new box gets a fresh socket; ControlPersist outlives one tick so back-to-back
 # ssh calls reuse the master. Shared with orchestrate.sh's arq probe.
 CTL_PATH=""   # set by load_box (needs host/port)
-SSH() { ssh -o ControlMaster=auto -o "ControlPath=$CTL_PATH" -o ControlPersist=120 \
+# -n (stdin from /dev/null) is REQUIRED: SSH() is called inside `while read`
+# loops fed by `<<<"$batch"` (e.g. sync_and_smoke). Without -n, ssh inherits and
+# drains the loop's stdin, so only the FIRST idea is ever processed. No SSH()
+# caller pipes data in, so -n is always safe here.
+SSH() { ssh -n -o ControlMaster=auto -o "ControlPath=$CTL_PATH" -o ControlPersist=120 \
             -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=12 \
             -p "$PORT" "$SSHUSER@$HOST" "$@"; }
 SCP_TO() { scp -o ControlMaster=auto -o "ControlPath=$CTL_PATH" -o ControlPersist=120 \

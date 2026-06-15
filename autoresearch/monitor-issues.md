@@ -1,5 +1,5 @@
 - GPU IDLE WITH WORK QUEUED: GPU utilization < 5% (from /api/gpu-usage) for what looks like > 30s while needs-run > 0. The box is paid-for and idle while runs wait — flag loudly with what the drainer is doing instead.
-- DRAINER DOWN: needs-run > 0 but the lab-autorun session is missing, or autorun is off.
+- DRAINER DOWN: needs-run > 0 but the lab-drain session (queue-daemon.sh --loop) is missing.
 - STUCK RUNNING: an idea has status `running` but no live training on the box (arqAlive false / GPU idle) — likely a lost or SSH-throttled run that never flipped to needs-recode.
 - WORKER STUCK: any gate worker (w_<n>) has held its lock > 7 minutes.
 - LOOP STALLED: no status flip in > 15 minutes while autopilot/autoresearch is ON.

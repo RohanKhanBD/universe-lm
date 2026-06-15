@@ -103,6 +103,12 @@ in [`../RUN-CONTRACT.md`](../RUN-CONTRACT.md). Read that file once; produce both
    `MinimalLLM(C())` before spending any GPU time. Use the established stub shape
    (idea flags are NOT CLI args — `train_llm.py` argparse silently ignores them,
    so the `C`-subclass + `--config_class __main__.C` is the only reliable toggle).
+   The `__main__` block **must** drive `train_llm` (`import train_llm; …;
+   train_llm.main()`). `train_llm.py` is the **only** trainer in `universe-lm` —
+   never reference `main.py`, `scripts/train.py`, or a bare `train.py` (those
+   don't exist; they fail on the GPU with `can't open file …` and waste a claim).
+   `_box_smoke.py` now rejects any stub that names a non-existent entrypoint or
+   omits `train_llm`, before GPU time.
 
 2. **`autoresearch/ideas/<idea>/run.json`** — the descriptor the daemon reads:
 

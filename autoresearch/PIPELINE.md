@@ -126,8 +126,11 @@ Hard rules).
 
 ## Run + evidence (the last mile, single-pass)
 
-`needs-run` is owned by the **runner** (`prompts/runner.md`) — run + pull +
-analyze in one pass; *not* "human, for now." Raw run data is the durable
+`needs-run` is owned by the **deterministic drain daemon** (`bin/queue-daemon.sh`,
+run via the `lab-drain` tmux loop) — run + pull + analyze with no LLM in the hot
+loop; *not* "human, for now." (The old AI GPU agents `runner.md`/`run-idea.md`
+were retired — AI now owns only the upstream gates: mine/taste/review/code.)
+Raw run data is the durable
 `results.json` under `remote-results/<date>-vast-<tier>/` (logs alongside). The
 pipeline-side record is **`evidence.md`** in the idea folder:
 
