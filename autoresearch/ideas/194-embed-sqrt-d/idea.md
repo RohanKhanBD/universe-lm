@@ -1,8 +1,8 @@
 ---
 id: 194-embed-sqrt-d
-status: implementing
+status: needs-run
 round: 1
-updated: 2026-06-15T08:35:10Z
+updated: 2026-06-15T08:51:04Z
 transfer-risk: low
 plain: Scale the input embedding down by 1/sqrt(d_model) (GPT-2 style) so its magnitude matches the attention and FFN outputs and the residual stream doesn't explode.
 ---
