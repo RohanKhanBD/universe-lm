@@ -1,8 +1,8 @@
 ---
 id: 173-entmax-15
-status: tasting
+status: needs-repitch
 round: 1
-updated: 2026-06-15T01:46:31Z
+updated: 2026-06-15T01:46:56Z
 transfer-risk: med
 plain: Replace softmax attention with a learnable sparse-attention operator that smoothly interpolates between dense softmax and hard sparsemax, starting exactly at softmax so step-0 is byte-identical.
 ---
@@ -99,3 +99,49 @@ to develop. Distinct from 025-SSMax (per-head temperature) and 148-focal-mod
 (replaces attention) — entmax-1.5 *is* softmax at step 0 and only
 departs via the learned α_h, so the lever is bit-identical at init and
 the departure is smooth.
+
+## Plan
+- **Files to change**:
+  - `models/layers.py`:
+    - Add top-level `entmax_15` helper (after `softpick`): bisection on
+      the Lagrange multiplier `λ` to project scores onto the α=1.5
+      simplex. Closed form `p_i = max(0, 0.5·(s_i − λ))^2` with
+      `p /= p.sum()`. ~25 LoC.
+    - Add `use_entmax: bool = False` and `entmax_buckets: int = 32` to
+      `MultiHeadAttention.__init__` kwargs. Allocate
+      `self.entmax_alpha_raw = nn.Parameter(torch.zeros(n_heads))` when
+      on (init 0 ⇒ `α_h = 1 + 0.5·(1 + tanh(0)) = 1` ⇒ entmax-1.5
+      collapses to softmax at step 0).
+    - Force the manual attention path when `use_entmax=True` (added to
+      the elif at line 2881). Replace `torch.softmax(scores, dim=-1)`
+      with `entmax_15(scores, dim=-1, alpha_per_head=…)` at both
+      softmax call sites (FIRE branch line 2878 and manual branch line
+      3035).
+  - `configs/llm_config.py` — add `use_entmax: bool = False` and
+    `entmax_buckets: int = 32` to `LLMConfig` (default off).
+  - `models/llm.py` — pass `use_entmax=self.use_entmax` and
+    `entmax_buckets=self.entmax_buckets` to both the YOCO upper-half
+    block (~line 680) and the standard transformer block (~line 960).
+- **Config flag**: `use_entmax: bool = False` (off by default).
+- **Step-0 byte-identical**: `entmax_alpha_raw = 0` ⇒ `α_h = 1` for all
+  heads ⇒ the bisection degenerates to the softmax projection (the
+  quadratic form `max(0, s − λ)^2 / Σ` with `λ` chosen for
+  `Σp=1` is equivalent to softmax in the `α=1` limit). With
+  `bisection_tol=1e-7` the max-abs-diff vs `torch.softmax` is well below
+  the 1e-5 fp32 noise floor used by the repo's step-0 identity checks.
+  When `use_entmax=False` the helper is not called at all and the
+  forward graph is bit-identical to baseline.
+- **Run command** (tiny1m3m, seed 42):
+  ```bash
+  /venv/main/bin/python -m scripts.train \
+      --config tiny1m3m \
+      --variant trt \
+      --seed 42 \
+      --override 'use_entmax=True' --override 'entmax_buckets=32' \
+      --run-tag 173-entmax-15-trt
+  ```
+- **Reading the val loss**: parsed from the JSONL training log
+  (`runs/<tag>/log.jsonl`, last line's `val_loss` field) per the
+  standard pipeline convention.
+- **Out of scope**: per-layer β_l scalar (the second lever axis in the
+  idea sketch) — keeps the LoC budget tight and the lever isolated.
