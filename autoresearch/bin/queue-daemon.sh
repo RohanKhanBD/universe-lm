@@ -53,9 +53,14 @@ DEFAULT_TIMEOUT="${JOB_TIMEOUT:-12m}"
 SMOKE_TRAINER="train_llm"
 SMOKE_MODEL_IMPORT="from models.llm import MinimalLLM"
 SMOKE_MODEL_CTOR="MinimalLLM"
+# Model/config code the box must `git pull` before it can build a stub. Implementer
+# agents edit these in the working tree but are forbidden to push (human-review gate),
+# so without this the box pulls stale code -> ImportError -> smoke FAIL -> GPU starves.
+# autosync_code() commits+pushes exactly these paths before every remote pull.
+SYNC_PATHS="configs models train_llm.py"
 load_config() {
   [ -f "$CONFIG_JSON" ] || return 0
-  local vals rt bc dp cc st si sc
+  local vals rt bc dp cc st si sc sp
   vals="$(python3 - "$CONFIG_JSON" <<'PY' 2>/dev/null || true
 import json, sys
 try: d = (json.load(open(sys.argv[1])).get("drain") or {})
@@ -65,9 +70,10 @@ print(d.get("remote_tmux",""));   print(d.get("baseline_config",""))
 print(d.get("dataset_path",""));  print(d.get("ctrl_command",""))
 print(s.get("trainer",""));       print(s.get("model_import",""))
 print(s.get("model_ctor",""))
+print(" ".join(d.get("sync_paths") or []))
 PY
 )"
-  { read -r rt; read -r bc; read -r dp; read -r cc; read -r st; read -r si; read -r sc; } <<<"$vals"
+  { read -r rt; read -r bc; read -r dp; read -r cc; read -r st; read -r si; read -r sc; read -r sp; } <<<"$vals"
   [ -n "$rt" ] && REMOTE_TMUX="$rt"
   [ -n "$bc" ] && CTRL_CONFIG="$bc"
   [ -n "$dp" ] && DATASET="$dp"
@@ -75,6 +81,7 @@ PY
   [ -n "$st" ] && SMOKE_TRAINER="$st"
   [ -n "$si" ] && SMOKE_MODEL_IMPORT="$si"
   [ -n "$sc" ] && SMOKE_MODEL_CTOR="$sc"
+  [ -n "$sp" ] && SYNC_PATHS="$sp"
 }
 load_config
 
@@ -511,6 +518,28 @@ reclaim() {
   done
 }
 
+# ── 3a½. push local model code so the box's `git pull` actually gets it ──────
+# Implementers edit $SYNC_PATHS in the working tree but never push (human-review
+# gate), so the box would pull stale code and smoke-FAIL on import. We close that
+# gap here: stage only $SYNC_PATHS, py_compile-guard them (never push a syntax
+# error), commit if changed, and push the current branch. Best-effort — any
+# failure just means the box pulls whatever was last pushed, same as before.
+autosync_code() {
+  ( cd "$ROOT" || exit 0
+    git add -- $SYNC_PATHS 2>/dev/null || exit 0
+    git diff --cached --quiet -- $SYNC_PATHS && exit 0   # nothing new to ship
+    # syntax-guard: bail (leaving staged) if any staged .py won't compile
+    local pyfiles
+    pyfiles="$(git diff --cached --name-only -- $SYNC_PATHS | grep '\.py$')"
+    if [ -n "$pyfiles" ] && ! python3 -m py_compile $pyfiles 2>/dev/null; then
+      log "autosync SKIP: staged model code fails py_compile — not pushing"; exit 0
+    fi
+    git commit -q -m "daemon: auto-sync model code for box pull [$(date -u +%FT%TZ)]" || exit 0
+    git push -q 2>&1 | tail -1 >&2 || log "autosync push warned (continuing)"
+    log "autosync: pushed model code $(git rev-parse --short HEAD)"
+  ) || true
+}
+
 # ── 3b. sync + CPU build-smoke every claimed arq on the box (BATCHED) ────────
 # echoes the subset of "<idea> <arq> <to>" lines that passed smoke. The whole
 # step is 3 connections regardless of batch size — git pull, one batched scp of
@@ -526,6 +555,7 @@ sync_and_smoke() {
   done <<<"$batch"
   [ "${#arqs[@]}" -gt 0 ] || return 0
 
+  autosync_code   # ship implementer-written model code before the box pulls it
   SSH "cd $REMOTE_REPO && git pull --ff-only 2>&1 | tail -1" >&2 || log "git pull warned (continuing)"
   # one batched scp: the smoke helper + every stub, all into the repo root
   SCP_MANY_TO "$ROOT/autoresearch/bin/_box_smoke.py" "${srcs[@]}" "$REMOTE_REPO/" 2>/dev/null \
