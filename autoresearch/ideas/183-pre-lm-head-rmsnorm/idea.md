@@ -2,7 +2,7 @@
 id: 183-pre-lm-head-rmsnorm
 status: running
 round: 1
-updated: 2026-06-15T07:48:52Z
+updated: 2026-06-15T07:50:42Z
 transfer-risk: low
 plain: Add one final normalization layer (Gemma 2 / LLaMA-3 style) right before the language-model head so the output sees a well-scaled hidden state, starting with the gain at 1 so step-0 matches the baseline.
 ---

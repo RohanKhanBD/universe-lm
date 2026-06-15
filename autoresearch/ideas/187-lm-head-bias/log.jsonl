@@ -8,3 +8,5 @@
 {"ts":"2026-06-15T07:30:06Z","agent":"reviewer","idea":"187-lm-head-bias","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T07:34:17Z","agent":"code-impl","idea":"187-lm-head-bias","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T07:39:24Z","agent":"code-impl","idea":"187-lm-head-bias","from":"planning","to":"needs-run","round":1,"note":"plan+code done"}
+{"ts":"2026-06-15T07:50:43Z","agent":"daemon","idea":"187-lm-head-bias","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T07:51:06Z","agent":"daemon","idea":"187-lm-head-bias","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MAlibiLMHeadBiasConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}

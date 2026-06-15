@@ -24,3 +24,4 @@
 {"ts":"2026-06-15T07:26:26Z","agent":"daemon","idea":"181-cross-head-rmsnorm","from":"needs-run","to":"running","round":2,"note":"claimed: queued by daemon"}
 {"ts":"2026-06-15T07:28:58Z","agent":"reset-button","idea":"181-cross-head-rmsnorm","from":"running","to":"needs-run","round":2,"note":"auto-requeued stale GPU run (no live supervisor)"}
 {"ts":"2026-06-15T07:48:52Z","agent":"daemon","idea":"181-cross-head-rmsnorm","from":"needs-run","to":"running","round":2,"note":"repair: OK on box but UI stale-sweep clobbered to needs-run; restore so finalize judges it"}
+{"ts":"2026-06-15T07:50:38Z","agent":"daemon","idea":"181-cross-head-rmsnorm","from":"running","to":"done","round":2,"note":"NULL: trt=6.4125 inside champion configs.llm_config.Tiny1M3MLogitConvConfig 0.984±0.04 (Δ5.4285)"}

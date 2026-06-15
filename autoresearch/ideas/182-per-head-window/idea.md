@@ -1,8 +1,8 @@
 ---
 id: 182-per-head-window
-status: running
+status: done
 round: 1
-updated: 2026-06-15T07:48:52Z
+updated: 2026-06-15T07:50:42Z
 transfer-risk: med
 plain: Give each attention head its own learnable "how far back should I look" window, starting with every head looking at the full sequence so step-0 is byte-identical.
 ---
