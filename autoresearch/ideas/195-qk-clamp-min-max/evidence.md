@@ -6,7 +6,7 @@
 - treatment val: 6.4094   Δ vs baseline: 0.1555
 - bpb: n/a (pending harness)
 - pass/fail bar: noise-band rule — WIN iff val < mean − band (see plan.md for the paper-level claim)
-- raw: remote-results/2026-06-15-vast-tiny1m3m/results.json (logs alongside)
+- raw: /remote-results/2026-06-15-vast-tiny1m3m/results.json (logs alongside)
 - date: 2026-06-15
 - judged-by: queue-daemon.sh (deterministic)
 

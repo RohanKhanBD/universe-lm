@@ -6,3 +6,4 @@
 {"ts":"2026-06-15T16:35:40Z","agent":"orchestrator","idea":"197-output-residual-sqrt-2l","from":"planning","to":"needs-plan","round":1,"note":"reclaim stale planning lock (7m)"}
 {"ts":"2026-06-15T16:45:09Z","agent":"code-impl","idea":"197-output-residual-sqrt-2l","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T16:45:12Z","agent":"code-impl","idea":"197-output-residual-sqrt-2l","from":"planning","to":"needs-run","round":1,"note":"plan + code done — fixed α = 1/√(2L) wired in 5 residual-add sites; build-smoke OK"}
+{"ts":"2026-06-15T16:48:43Z","agent":"daemon","idea":"197-output-residual-sqrt-2l","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}

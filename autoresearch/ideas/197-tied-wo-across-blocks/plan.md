@@ -38,12 +38,15 @@ the 188 / 192 / 196 / 207 placement convention).
   construction (in BOTH the `yoco_upper_blocks` ModuleList AND the
   standard `transformer_blocks` ModuleList, matching the existing
   pass-through convention used by 188 / 171 / 207).
-- Mutually-exclusive with `use_yoco` and `use_gau` at construction (the
-  shared W_O shared parameter lives on the model and the YOCO upper-half /
-  GAU blocks don't take a `tied_wo_shared` kwarg). Add an assert mirroring
-  the `use_hyper_connections + use_yoco` guard at line 1933-1944. (If YOCO
-  is on, the W_O is shared anyway via YOCO's KV sharing — tying W_O on top
-  is incoherent.)
+- Mutually-exclusive with `use_yoco` and `use_gau` at construction. The
+  `use_yoco` side of the check fires where `use_tied_wo_across_blocks` is
+  read off the config (since `use_yoco` is read earlier in `__init__`).
+  The `use_gau` side fires *after* `self.use_gau` is set on the model —
+  the shared `W_O_shared` Parameter is then allocated on the model so
+  every MHA can store the SAME reference (not a copy). (If YOCO is on,
+  the W_O is shared anyway via YOCO's KV sharing — tying W_O on top is
+  incoherent; if GAU is on, the GAU block has no `qkvo_proj` so the W_O
+  slot doesn't exist — also incoherent.)
 
 ### `models/layers.py` (TransformerBlock.__init__ + MHA.__init__ + MHA.forward)
 - Add `use_tied_wo_across_blocks: bool = False` and `tied_wo_shared=None`

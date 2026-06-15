@@ -1,8 +1,8 @@
 ---
 id: 203-pre-wo-se-channel-attn
-status: needs-review
+status: reviewing
 round: 3
-updated: 2026-06-15T16:48:14Z
+updated: 2026-06-15T16:49:15Z
 transfer-risk: med
 plain: Insert a tiny Squeeze-Excitation channel-attention block right before the W_O projection (γ-gate init ≈ 0 ⇒ step-0 max-abs-diff < 1e-5 vs baseline; internal se_weight ≈ 0.5 but γ-gate silences the branch), letting each token softly up- or down-weight its own channels.
 ---
