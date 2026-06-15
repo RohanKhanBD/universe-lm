@@ -1281,6 +1281,46 @@ class LLMConfig:
     use_lowrank_wv: bool = False
     wv_rank: int = 8
     wv_lowrank_alpha_init: float = -10.0
+    # 199 — Spectral-Norm-Bounded W_O Projection (per-block
+    # learnable Lipschitz cap on the attention output projection,
+    # Miyato et al. 2018 "Spectral Normalization for GANs" ICLR
+    # 2018, arXiv:1802.05957 + Gouk et al. 2021 arXiv:1804.04368).
+    # Per-block *l*, apply an *asymmetric* (clip-only) Lipschitz
+    # cap on W_O's spectral norm σ_max(W_O^[l]):
+    #   cap_l       = σ_max(W_O_init^[l]) · exp(γ_l)
+    #   W_O_eff^[l] = W_O^[l] · min(1, cap_l / σ_max(W_O^[l]))
+    #                = W_O^[l] · min(1, σ_max_init·exp(γ_l) / σ_max_current)
+    # `γ_l` is a per-block learnable 0-dim scalar (init 0 ⇒
+    # `exp(γ_l)=1`). `σ_max_init` is the spectral norm of W_O
+    # captured on the FIRST forward (then frozen — never recomputed
+    # from a perturbed W_O; this is the byte-identity guarantee,
+    # per the review's implementation note). `σ_max_current` is
+    # tracked via power iteration (1 step per block per forward, a
+    # single `[d_model]`-sided vector `u` per block updated as
+    # `u ← W_O · u / ||·||₂`, then `σ_max ≈ u^T · W_O · u /
+    # (u^T · u)`). At step 0 `γ_l = 0` and `σ_max_current = σ_max_init`
+    # ⇒ the factor is exactly 1 ⇒ `W_O_eff == W_O` byte-identical
+    # to baseline (the lever is dormant). As training proceeds,
+    # σ_max(W_O) typically grows under SGD; the optimizer can push
+    # `γ_l < 0` to tighten the cap (and bind the Lipschitz
+    # constant), or `γ_l > 0` to loosen it (a no-op since the
+    # factor is already 1). The asymmetry (clip-only) is the bet:
+    # the informative direction is `γ_l < 0`. Power-iteration
+    # state `u` is a Buffer (`.buffers()` not `.parameters()`) so
+    # it survives optimizer state serialization but does not
+    # consume an optimizer slot. `wo_spectral_cap_pi_iters` is the
+    # number of power-iteration steps per forward (default 1, the
+    # minimum that tracks the σ_max drift under standard SGD at
+    # 0.94M/12L). Distinct from 128-spectral-decoupling (gradient-
+    # space orthogonalization) and 160-rms-gain-per-head (post-AV,
+    # post-W_O magnitude gain): 199 operates *intra-W_O* on the
+    # projection's forward Lipschitz constant. Default off → no
+    # Parameter registered, no Buffer registered, no branch taken,
+    # baseline path bit-identical. See
+    # `autoresearch/ideas/199-spectral-attn-output/idea.md` /
+    # `plan.md`.
+    use_wo_spectral_cap: bool = False
+    wo_spectral_cap_pi_iters: int = 1
 
     # 151 — RoV (Rotary Value Embeddings, gated). Apply the same rotary
     # position embedding already used on Q,K to the value vector V as
@@ -8485,3 +8525,51 @@ class Tiny1M3MTiedWOConfig(Tiny1M3MConfig):
     documented in `_arq_161-dyt-temp.py`).
     """
     use_tied_wo_across_blocks: bool = True
+
+
+@dataclass
+class Tiny1M3MWOSpectralCapConfig(Tiny1M3MConfig):
+    """199 — Tiny1M3M with per-block learnable spectral-norm cap on
+    W_O (Miyato et al. 2018 "Spectral Normalization for GANs" ICLR
+    2018, arXiv:1802.05957 + Gouk et al. 2021 "Regularisation of
+    Neural Networks by Enforcing Lipschitz Continuity"
+    arXiv:1804.04368).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val
+    6.40 ± 0.04 cached for this box, see
+    `autoresearch/baseline-cache.json`). Adds one learnable 0-dim
+    scalar `γ_l ∈ R` per MHA (init 0 ⇒ `exp(γ_l)=1`) and a
+    power-iteration Buffer `u_l ∈ R^{d_model}` per MHA. On every
+    forward the cap is applied to W_O as
+        `W_O_eff^[l] = W_O^[l] · min(1, σ_max_init^[l] · exp(γ_l) / σ_max_current^[l])`
+    where `σ_max_current^[l]` is tracked via power iteration on the
+    O-slice weight. At step 0 `γ_l = 0` and `σ_max_current = σ_max_init`
+    ⇒ factor = 1 ⇒ `W_O_eff == W_O` byte-identical to the no-flag
+    baseline. As training proceeds, `σ_max(W_O)` typically grows
+    under SGD; the optimizer can push `γ_l < 0` to tighten the cap
+    and bind the forward Lipschitz constant on the projection.
+
+    Cost: +12 `γ_l` scalars (12 params = +0.001% of 0.94M), 12
+    `u_l` buffers of `d_model=64` floats (negligible memory). One
+    extra matmul + dot + scalar multiply per block per forward
+    (~12K FLOPs/step at d_model=64) — sub-noise compute. Default
+    power-iteration count is 1 step per forward
+    (`wo_spectral_cap_pi_iters=1`); the σ_max drift is slow at
+    0.94M/12L so a single PI step is sufficient for tracking.
+
+    NULL band |Δ| < 0.01. DRIFT > +0.01. PASS ≤ −0.01. Distinct
+    from 160-rms-gain-per-head (post-AV/post-W_O magnitude gain,
+    null Δ=−0.0023) and 128-spectral-decoupling (gradient-space
+    orthogonalization, null Δ=+0.10 wrong-sign): 199 operates
+    intra-W_O on the forward Lipschitz constant of the projection
+    itself, with the *informative* direction being tightening
+    (`γ_l < 0`). See `autoresearch/ideas/199-spectral-attn-output/
+    idea.md` / `plan.md`.
+
+    @dataclass-decorated so `use_wo_spectral_cap` default is
+    properly overridden (the dataclass-inheritance pitfall
+    documented in `_arq_161-dyt-temp.py`).
+    """
+    use_wo_spectral_cap: bool = True
+    wo_spectral_cap_pi_iters: int = 1
+

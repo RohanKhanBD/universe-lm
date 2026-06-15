@@ -1609,6 +1609,35 @@ class MinimalLLM(nn.Module):
                         # `autoresearch/ideas/157-conv-ffn/idea.md`.
                         use_conv_ffn=self.use_conv_ffn,
                         conv_ffn_kernel=self.conv_ffn_kernel,
+                        # 193 — Blockwise attention temperature schedule
+                        # pass-through to the standard transformer block.
+                        # `tau_b` is the precomputed per-block scalar
+                        # `1 + α · cos(π · i / (n_unique − 1))`; at
+                        # `block_temp_alpha = 0` (the default and the
+                        # baseline-ctrl value), `tau_b = 1.0` for all
+                        # blocks ⇒ the divide is the identity and the
+                        # baseline path stays bit-identical. The
+                        # committed trt value is `α = -0.3` (set by
+                        # `Tiny1M3MBlockTempConfig`), which produces
+                        # `τ_b ∈ [0.7, 1.29]` across `n_unique=12`
+                        # blocks (sharpen early / soften late). The
+                        # schedule is computed inline here from
+                        # `n_unique` and `i` (the comprehension
+                        # variable) so no extra list is allocated;
+                        # when the flag is off the kwarg default
+                        # (`1.0`) is propagated and no Buffer is
+                        # registered on the inner MHA, keeping the
+                        # baseline path bit-identical. Forces the
+                        # manual attention path so SDPA's flash
+                        # kernel doesn't fuse QK^T+softmax+AV.
+                        # See `autoresearch/ideas/193-blockwise-attn-
+                        # temp-schedule/idea.md` for the schedule
+                        # formula and the sign convention.
+                        use_block_temp_schedule=getattr(config, "use_block_temp_schedule", False),
+                        block_temp_alpha=getattr(config, "block_temp_alpha", 0.0),
+                        tau_b=(1.0
+                               + getattr(config, "block_temp_alpha", 0.0)
+                                 * math.cos(math.pi * i / max(n_unique - 1, 1))),
                     )
                     for i in range(n_unique)
                 ]

@@ -3354,7 +3354,7 @@ class MultiHeadAttention(nn.Module):
         Kr = K * cos + rotate_half(K) * sin
         return Qr, Kr
 
-    def forward(self, x, ve=None, gate_x=None, v_residual=None, deberta_relpos=None, shared_kv=None, q_carry=None, av_carry=None, prev_W_K=None, prev_W_V=None, prev_block_scores=None):
+    def forward(self, x, ve=None, gate_x=None, v_residual=None, deberta_relpos=None, shared_kv=None, q_carry=None, av_carry=None, prev_W_K=None, prev_W_V=None, prev_block_scores=None, cosformer_gamma=None):
         batch_size, seq_len = x.size(0), x.size(1)
         # 013 — CoPE replaces RoPE, so the post-RoPE norm has no rotary
         # to post-norm. Reject the misconfiguration loudly so the
@@ -3461,6 +3461,33 @@ class MultiHeadAttention(nn.Module):
             "use_cross_head_rmsnorm=True is mutually exclusive with "
             "use_gated_attn=True (closed-024 input-conditional "
             "sigmoid gate; the composition restructures the lever)."
+        )
+        # 189 — CosFormer linear attention is mutually exclusive with
+        # the other attention-path levers (linear / diff / nsa /
+        # hybrid / multiscale). The cosFormer branch IS the
+        # attention path; combining with another is double-attention
+        # and a structural lever change.
+        assert not (self.use_cosformer and self.use_linear_attn), (
+            "use_cosformer=True is mutually exclusive with use_linear_attn=True "
+            "(both replace softmax with a linear-time feature-map form — the "
+            "cosFormer branch IS the attention path; turn 080 OFF to isolate "
+            "189)."
+        )
+        assert not (self.use_cosformer and self.use_diff_attn), (
+            "use_cosformer=True is mutually exclusive with use_diff_attn=True "
+            "(both replace the attention path; combining is double-attention)."
+        )
+        assert not (self.use_cosformer and self.use_nsa_global), (
+            "use_cosformer=True is mutually exclusive with use_nsa_global=True "
+            "(both replace the attention path; combining is double-attention)."
+        )
+        assert not (self.use_cosformer and self.use_hybrid_heads), (
+            "use_cosformer=True is mutually exclusive with use_hybrid_heads=True "
+            "(both replace the attention path; combining is double-attention)."
+        )
+        assert not (self.use_cosformer and self.use_multiscale_heads), (
+            "use_cosformer=True is mutually exclusive with use_multiscale_heads=True "
+            "(both replace the attention path; combining is double-attention)."
         )
         # 191 — Per-token attention output gain. Mutually exclusive
         # with the pre-merge post-AV gates (160, 045, 142/121's
@@ -5058,6 +5085,73 @@ class MultiHeadAttention(nn.Module):
                 attn_output = numerator / denom.unsqueeze(-1)
 
             attn_output = attn_output.to(V.dtype)
+        elif self.use_cosformer:
+            # 189 — CosFormer-style linear attention (Qin et al.
+            # NeurIPS 2022, arXiv:2202.08791). Replace softmax
+            # attention with the kernel-replacement form
+            #   out = (Q'·(K'^T·V)) / (Q'·K'^T)
+            # where Q' = cos(Q), K' = exp(γ·K)·cos(K), γ is a
+            # learnable per-block scalar passed in via
+            # `cosformer_gamma` (model-owned Parameter on
+            # `MinimalLLM.cosformer_gammas`, one entry of size
+            # `n_layers` so the optimizer sees ONE param group, not
+            # 12). Linear in sequence length via the prefix-sum
+            # cumsum trick (same shape as `use_linear_attn` above):
+            # compute `K'^T·V` first ([B,H,d_k,d_k]), then `Q'·KV`
+            # ([B,H,T,d_k]); causal via `[end_idx, start_idx]`
+            # windowed prefix-sum. The denominator
+            # `Q'·K'^T` is MANDATORY — bound in spec, no skip-flag
+            # — it is the softmax replacement, not a global
+            # mean-pool. At γ=0 the lever reduces to the cumulative
+            # mean of V over the causal prefix (since `cos(Q)·cos(K)^T
+            # ≈ 1` and `cumsum(cos(K)) ≈ (t+1)` under the small-
+            # logit std-0.02 qkvo_proj init). Float promotion to
+            # fp32 for the matmul, cast back to V.dtype at the end
+            # — same convention as the `use_linear_attn` branch
+            # above. See
+            # `autoresearch/ideas/189-cosformer-linear-attn/idea.md`.
+            gamma = (
+                self.cosformer_gamma_init if cosformer_gamma is None
+                else float(cosformer_gamma)
+            )
+            q_phi = torch.cos(Q.float())                          # [B,H,T,d_k]
+            k_phi_raw = torch.cos(K.float()) * torch.exp(gamma * K.float())  # [B,H,T,d_k]
+            v_float = V.float()                                   # [B,H,T,d_k]
+            if self.use_sliding_window and self.attention_dilation != 1:
+                # Windowed (non-cumsum) form — same shape as the
+                # `use_linear_attn` windowed branch above. Applies a
+                # hard causal+SWA mask on the K'V matmul so each
+                # query only aggregates keys in its window.
+                scores = torch.einsum("bhtd,bhsd->bhts", q_phi, k_phi_raw)
+                mask = self._sliding_window_mask[:seq_len, :seq_len]
+                scores = scores.masked_fill(~mask, 0.0)
+                denom = scores.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+                weights = scores / denom
+                attn_output = torch.einsum("bhts,bhsd->bhtd", weights, v_float)
+            else:
+                # Causal linear-attention form (prefix-sum cumsum).
+                # Window defaults to full causal when SWA is off.
+                window = self.sliding_window_size if self.use_sliding_window else seq_len
+                kv = k_phi_raw.unsqueeze(-1) * v_float.unsqueeze(-2)
+                prefix_kv = torch.cat(
+                    [torch.zeros_like(kv[:, :, :1]), kv.cumsum(dim=2)],
+                    dim=2,
+                )
+                prefix_k = torch.cat(
+                    [torch.zeros_like(k_phi_raw[:, :, :1]), k_phi_raw.cumsum(dim=2)],
+                    dim=2,
+                )
+                end_idx = torch.arange(1, seq_len + 1, device=Q.device)
+                start_idx = (end_idx - window).clamp_min(0)
+                kv_sum = prefix_kv[:, :, end_idx] - prefix_kv[:, :, start_idx]
+                k_sum = prefix_k[:, :, end_idx] - prefix_k[:, :, start_idx]
+                numerator = torch.einsum("bhtd,bhtde->bhte", q_phi, kv_sum)
+                # Mandatory denominator (bound in spec, no skip-flag).
+                denom = torch.einsum(
+                    "bhtd,bhtd->bht", q_phi, k_sum
+                ).clamp_min(1e-6).unsqueeze(-1)
+                attn_output = numerator / denom
+            attn_output = attn_output.to(V.dtype)
         elif self.use_sliding_window:
             attn_output = F.scaled_dot_product_attention(
                 Q, K, V,
@@ -5676,6 +5770,16 @@ class TransformerBlock(nn.Module):
         use_nsa_global: bool = False,
         nsa_block: int = 64,
         use_hybrid_heads: bool = False,
+        # 189 — CosFormer-style linear attention (Qin et al. NeurIPS
+        # 2022, arXiv:2202.08791). Pass-through to the inner MHA —
+        # the MHA flag `use_cosformer` gates the cosFormer branch in
+        # MHA.forward, the per-block γ scalar lives on the model
+        # (`MinimalLLM.cosformer_gammas`) and is read via
+        # `cosformer_gamma` in `TransformerBlock.forward`. Default
+        # off → baseline path bit-identical. See
+        # `autoresearch/ideas/189-cosformer-linear-attn/idea.md`.
+        use_cosformer: bool = False,
+        cosformer_gamma_init: float = 0.0,
         norm_type: str = "rmsnorm",
         qk_norm_type: str = "rmsnorm",
         v_norm_type: str = "",
