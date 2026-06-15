@@ -216,6 +216,35 @@ class LLMConfig:
     # `autoresearch/ideas/195-qk-clamp-min-max/idea.md`.
     use_qk_clamp: bool = False
     qk_clamp_c: float = 2.0
+    # 193 — Blockwise attention temperature schedule (fixed cosine-
+    # depth, no learned params). One multiplicative scalar `τ_b ∈ R^1`
+    # per block `b ∈ [0, L-1]` (`L = n_layers`, 12 at tiny1m3m),
+    # shape `τ_b = 1 + α · cos(π · b / L)`, applied to the pre-softmax
+    # attention scores as `scores_b = Q_b K_b^T / (τ_b · √d_k)`. The
+    # committed scalar is `α = -0.3` ⇒ at `b=0`, `τ_0 = 0.7` (sharper
+    # softmax on early layers, the "early layers do local pattern-
+    # matching" prior — consistent with 175-alibi's locality-rewarding
+    # additive WIN); at `b=L-1=11`, `τ_11 ≈ 1.29` (softer softmax on
+    # late layers, "late layers mix broad context"). The schedule is
+    # hard-coded: zero new parameters. `α = 0` ⇒ `τ_b = 1` for all `b`
+    # ⇒ `scores / (1·√d_k) = scores / √d_k` byte-identical to the
+    # standard pre-softmax scale at step 0 (and at every step where
+    # `α = 0` is held). The buffer of `τ_b` values is computed once at
+    # model construction (registered as a non-Parameter `Buffer` on the
+    # MHA) so the per-forward cost is one elementwise divide on
+    # `[B, H, T, T]` per block. Distinct from 188 (per-block *learned*
+    # `exp(s_param_l)` on the same axis — 193 is the *fixed-shape*
+    # control), 155 (per-head *learned* scalar), 161 (per-layer
+    # *learned* scalar — closed DRIFT). Forces the manual attention
+    # path so SDPA's flash kernel doesn't fuse QK^T+softmax+AV (the
+    # pre-softmax score must be exposed for the `τ_b` divide). Default
+    # off → no Buffer registered, no branch taken, baseline path
+    # bit-identical. See `autoresearch/ideas/193-blockwise-attn-temp-
+    # schedule/idea.md` and the conditional framing in review.md
+    # (193 is informative whether 188 wins or nulls — at worst, it
+    # closes the fixed-shape depth-conditional scale axis).
+    use_block_temp_schedule: bool = False
+    block_temp_alpha: float = 0.0
     # 160 — Per-head RMS gain on the attention output (Gemma 2 /
     # Qwen 2.5). After the AV product and softmax aggregation, multiply
     # each head's output `o_h = (A·V)_h ∈ R^{T×d_k}` by a learnable
@@ -377,6 +406,23 @@ class LLMConfig:
     # runs bit-identical to baseline. See
     # `autoresearch/ideas/170-swiglu-ffn/idea.md`.
     use_swiglu_ffn: bool = False
+    # 196 — MishGLU FFN (Misra 2019 + Shazeer 2020 composition).
+    # Inner-activation axis orthogonal to 170's outer-GLU axis:
+    # `y = down_proj(mish(W_gate·x) ⊙ (W_up·x))` — structurally identical
+    # to SwiGLU (170) except the gate activation is `mish` (`x·tanh(
+    # softplus(x))`) instead of `silu`. `mish(0)=0` gives the step-0
+    # silence automatically (no explicit zero-init needed — and one
+    # would actually mask the gradient signal the lever depends on,
+    # since `dMish/dx|_{x=0} ≈ 0.6` vs `dSiLU/dx|_{x=0} = 0.5` is the
+    # lever). d_ff is scaled by the Shazeer 2/3 trick (`(2 * d_ff) //
+    # 3`) so total FFN param count matches SwiGLU to within ~0.4%.
+    # Default off → the new FFN class is never constructed, the
+    # standard `ffn_variant` cascade runs bit-identical to baseline.
+    # Mutually exclusive with `use_swiglu_ffn` (170) — they target the
+    # same FFN slot, different inner activations; the dispatch in
+    # `models/layers.py` puts MishGLU ahead so the new lever isn't
+    # silently shadowed. See `autoresearch/ideas/196-ffn-glu-mish/idea.md`.
+    use_mish_glu: bool = False
     # 198 — Pre-FFN Attention Mixing (FiLM-style cross-stream
     # conditioning; Perez et al. 2018, arXiv:1709.07871). The
     # standard FFN reads `ffn_in = norm2(x)` (pre-norm) where `x`
@@ -436,6 +482,34 @@ class LLMConfig:
     # `autoresearch/ideas/163-v-mix-conv/idea.md`.
     use_v_mix_conv: bool = False
     v_mix_conv_kernel: int = 3
+    # 201 — Degenerate gMLP Spatial Gating Unit on Attention Output
+    # (Liu et al. "Pay Attention to MLPs", NeurIPS 2021,
+    # arXiv:2105.08050, §3.1). The committed shape is
+    # `z = attn_out.mean(dim=T) → gelu(z) → z @ W_g → broadcast(T)`,
+    # with `attn_out_post = attn_out + α · z` and `α = σ(sgu_alpha)`,
+    # sgu_alpha init -10 ⇒ α ≈ 4.5e-5 ⇒ silent at step 0 (bit-
+    # identical to no-flag baseline). Note: the original gMLP SGU
+    # applies a T×T spatial mix along the token axis; the committed
+    # shape reduces the cross-token axis to a parameter-free mean
+    # (so the lever is a *per-channel gate broadcast* with channel
+    # mixing of the global summary, not a true T×T spatial mix —
+    # the "degenerate" prefix in the docstring captures this).
+    # Applied to the attention output pre-W_O alongside attention
+    # (not as a replacement, unlike gMLP proper). Sits on the same
+    # post-merge / pre-W_O site as 163 (local conv, depthwise) and
+    # 175 (alibi, post-attn pre-O bias) — three axes (local /
+    # global / bias) on the same architectural site.
+    # `gmlp_sgu_block_stride=3` applies the SGU to block_idx ∈
+    # {0, 3, 6, 9} ⇒ 4 of 12 blocks at tiny1m3m (per-block-
+    # stochastic to stay in the fair-by-param regime at 0.94M).
+    # Default off → baseline path bit-identical (no Parameter
+    # registered, no forward branch taken). Cost: 4 blocks ×
+    # d_model² extra params (~16K at tiny1m3m, +1.74% of 0.94M)
+    # plus 4 α scalars (negligible). See
+    # `autoresearch/ideas/201-mlp-token-mixer/idea.md`.
+    use_gmlp_sgu: bool = False
+    gmlp_sgu_block_stride: int = 3
+    gmlp_sgu_alpha_init: float = -10.0
     # #49 QK-norm-post-RoPE: apply RMSNorm to Q,K AFTER RoPE (modded-
     # nanogpt variant) instead of the default BEFORE RoPE. Flag-only,
     # no extra params. The post-RoPE norm constrains post-RoPE Q,K
@@ -641,6 +715,27 @@ class LLMConfig:
     # `True` / `1e-4`. See `autoresearch/ideas/167-logit-zloss/`.
     use_z_loss: bool = False
     z_loss_lambda: float = 0.0
+    # 198 — Residual-stream L2-norm z-loss (PaLM-style magnitude
+    # regularizer on the per-token residual, complementary to 167's
+    # logit-side z-loss). Auxiliary training loss term
+    # `c · mean(log(1 + ||r||²))` where `r ∈ R^{d_model}` is the
+    # per-token final residual stream (after the final norm + output
+    # dropouts, right before the LM head). Penalises *residual-stream*
+    # magnitude so the L2 norm cannot grow without bound — a soft
+    # upper bound that is quadratic for small `||r||` and logarithmic
+    # for large. Computed via
+    # `torch.log1p((x ** 2).sum(dim=-1)).mean()`. The
+    # `Tiny1M3MResidualZLossConfig` subclass sets them to `True` /
+    # `1e-4`. The trainer reads these via
+    # `getattr(config, "use_residual_zloss", False)` /
+    # `getattr(config, "zloss_coef", 0.0)` so adding them as proper
+    # LLMConfig fields with defaults `False` / `1e-4` is drop-in
+    # compatible with existing configs that don't set them.
+    # `use_residual_zloss=False` OR `zloss_coef=0.0` ⇒ term is
+    # exactly 0 ⇒ baseline forward + backward is bit-identical to
+    # no-z-loss. See `autoresearch/ideas/198-z-loss-on-residual/`.
+    use_residual_zloss: bool = False
+    zloss_coef: float = 1e-4
     # 168 — AV-Output Carry (post-AV cross-block residual). For
     # each block l ≥ 1, augment the post-SDPA/post-reshape/pre-W_O
     # attention output with a learnable α_l-scaled carry from the
@@ -1208,6 +1303,28 @@ class LLMConfig:
     # no Parameter registered, no branch taken, baseline path bit-
     # identical. See `autoresearch/ideas/185-static-per-head-k-rotation/idea.md`.
     use_static_k_rotation: bool = False
+
+    # 200 — Static per-layer × per-pair learned K-rotation
+    # (depth-axis twin of 185, shared across heads, K-only). Each
+    # block has its OWN orthogonal rebase matrix `R_l ∈ R^{d_k ×
+    # d_k}` applied to K ONLY (Q untouched) — parameterized as a
+    # product of `d_k/2 = 8` 2D rotations on disjoint `(2i, 2i+1)`
+    # planes. One learnable angle `φ_{l,i} ∈ R` per (layer, plane),
+    # SHARED across heads (depth-axis: 185 varies angles across
+    # heads, 200 varies angles across layers). The K-only
+    # application breaks QK^T inner-product preservation (Q is
+    # in baseline basis, K is in R_l-rotated basis) — gives the
+    # lever a real axis to bind on, unlike a QK-symmetric
+    # application which would be a provable no-op. `R_l`
+    # block-diagonal-orthogonal preserves K's norm and the
+    # softmax temperature. Init `φ_{l,i} = 0` ⇒ `cos(0)=1`,
+    # `sin(0)=0` in fp32 ⇒ `R_l = I_{d_k}` exactly ⇒
+    # `K = R_l @ K = K` exactly ⇒ step-0 forward is bit-
+    # identical to the no-flag baseline. Default off ⇒ no
+    # Parameter registered, no branch taken, baseline path bit-
+    # identical. See
+    # `autoresearch/ideas/200-rope-phase-offset-per-layer/idea.md`.
+    use_per_layer_k_rotation: bool = False
 
     # 202 — V-Only Soft-Blend Probe (Isolate V-Sharing From
     # K-Sharing). Per head h, soft-blend per-head V with a group-
@@ -2724,6 +2841,65 @@ class Tiny1M3MVMixConvConfig(Tiny1M3MConfig):
     """
     use_v_mix_conv: bool = True
     v_mix_conv_kernel: int = 3
+
+
+@dataclass
+class Tiny1M3MGMLPSGUConfig(Tiny1M3MConfig):
+    """Tiny1M3M with degenerate gMLP SGU on attention output (201).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`). Each
+    block whose `block_idx % gmlp_sgu_block_stride == 0` (default
+    stride 3 ⇒ block_idx ∈ {0, 3, 6, 9} ⇒ 4 of 12 blocks at
+    tiny1m3m) applies a *degenerate gMLP SGU* on the post-attention
+    tensor `[B, T, d_model]` BEFORE the W_O projection (post-SDPA,
+    post-reshape, pre-W_O):
+
+        z = attn_out.mean(dim=T, keepdim=True)   # [B, 1, d_model]
+        z = F.gelu(z)                            # nonlinearity
+        z = z @ sgu_W                            # [B, 1, d_model]
+        z = z.expand(-1, T, -1)                  # broadcast T
+        attn_out_post = attn_out + α · z        # α = σ(sgu_alpha)
+
+    `sgu_W ∈ R^{d_model × d_model}` is registered as a raw
+    `nn.Parameter(torch.empty(d_model, d_model))` with inline
+    `.data.normal_(std=0.02)` so RNG state stays aligned with the
+    no-flag path (same discipline as 163's `v_mix_conv_weight`).
+    `sgu_alpha ∈ R^() ` is init at `gmlp_sgu_alpha_init=-10.0`
+    ⇒ `sigmoid(-10) ≈ 4.5e-5` ⇒ the additive contribution is
+    numerically 0 in fp32 at step 0 ⇒ forward output is
+    bit-identical to baseline at step 0 (same pattern as 175-alibi
+    / 188-cross-block-kv-share / 179-anti-causal-subheads).
+
+    Note: the original gMLP SGU (Liu et al. 2021, §3.1) applies a
+    *T×T spatial mix* along the token axis; the committed shape
+    reduces the cross-token reduction to a parameter-free mean
+    (no learnable T-axis interaction), so the lever is a per-
+    channel scalar broadcast with channel-mixing of the global
+    summary, NOT a true T×T spatial mix. The "degenerate" prefix
+    in the docstring captures this gap from the published SGU.
+    The lever is "per-channel gate broadcast" — the gMLP lineage
+    citation is preserved for honesty, but readers expecting a
+    T×T spatial mix should be redirected to the original paper.
+
+    Sibling axes on the same post-merge / pre-W_O site: 163 (local
+    depthwise conv, k=3), 175 (alibi, post-attn pre-O bias), 201
+    (this one, global per-channel gate broadcast) — three
+    different bet on what the attention output axis binds.
+
+    Cost: 4 blocks × d_model² + 4 α scalars = ~16K extra params
+    (+1.74% of 0.94M) at the default stride 3 / tiny1m3m. Default
+    off → baseline path bit-identical.
+
+    @dataclass-decorated so the `use_gmlp_sgu` default is properly
+    overridden (the dataclass-inheritance pitfall documented in
+    `_arq_161-dyt-temp.py` and `_arq_163-v-mix-conv.py`).
+
+    NULL band |Δ| ≤ 0.01. DRIFT > +0.01. PASS ≤ −0.01. See
+    `autoresearch/ideas/201-mlp-token-mixer/idea.md` / `plan.md`.
+    """
+    use_gmlp_sgu: bool = True
+    gmlp_sgu_block_stride: int = 3
+    gmlp_sgu_alpha_init: float = -10.0
 
 
 @dataclass
@@ -6815,6 +6991,73 @@ class Tiny1M3MZLossConfig(Tiny1M3MConfig):
 
 
 @dataclass
+class Tiny1M3MResidualZLossConfig(Tiny1M3MConfig):
+    """Tiny1M3M with residual-stream L2-norm z-loss (198).
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val
+    ~6.43). Adds an auxiliary training loss term
+    `c · mean(log(1 + ||r||²))` where `r ∈ R^{d_model}` is the
+    per-token *final* residual stream (after the final norm + output
+    dropouts, right before the LM head) and `c = zloss_coef = 1e-4`.
+    Penalises the residual stream's L2 norm so it cannot grow
+    without bound — a soft upper bound that is quadratic for small
+    `||r||` and logarithmic for large.
+
+    The penalty is *complementary* to 167's logit-side z-loss
+    (which targets the LM head's output magnitude via the
+    partition function, with gradient pressure on the residual
+    stream attenuated by `1/sqrt(d_model)` factors through the
+    head). 198's penalty is applied to the residual stream
+    *directly*, so the gradient flows through every backbone
+    weight without LM-head attenuation — a different lever on
+    the broader magnitude-stability axis.
+
+    The wiring is in `models/llm.py` `_run_post_embed` (stashes
+    `self._residual_zloss` and `self._residual_norm` on the model
+    when the flag is on) and `training/trainer.py` (reads
+    `getattr(model, "_residual_zloss", None)`, substitutes 0 when
+    off, and adds the term to the train loss). Default
+    `use_residual_zloss=False` ⇒ no stash, no penalty term,
+    baseline forward + backward bit-identical. Step-0 at
+    d_model=64, n_layers=12: `||r|| ≈ sqrt(12·Var(r)) ≈ 3.5` ⇒
+    `log1p(12) ≈ 2.56` ⇒ `c · 2.56 ≈ 2.56e-4` per step at tiny1m3m
+    (a small but non-zero auxiliary loss). Train-only; eval stays
+    plain CE (the term is added inside the train branch and not
+    in the eval path). Logged per-step via
+    `residual_zloss.detach().item()` and the per-token
+    `residual_norm` (mean and max) for the falsification
+    signature trace (`||r||_L2` at steps `{0, 100, 500, 1000,
+    2000}` with binding threshold `5·sqrt(d_model) = 40`).
+
+    Distinct from the closed logit-side axis (167 null) and the
+    per-block depth-conditional levers (017/130/142 null). 198
+    is a *loss-side* regularizer — a static L2 penalty on the
+    *final* residual stream, not a per-block scalar or
+    stochastic-depth regularizer (111-drop-path null). The
+    closed-loop story (167 null + 111/017/130/142 null) is
+    NOT a closure of 198's axis because 198 is mechanistically
+    distinct: residual-side, loss-side, static penalty, no
+    learnable params.
+
+    @dataclass-decorated so `zloss_coef` default is properly
+    overridden (the dataclass-inheritance pitfall documented in
+    `_arq_161-dyt-temp.py` and `_arq_167-logit-zloss.py`).
+
+    NULL band |Δ| ≤ 0.01. DRIFT > +0.01. PASS ≤ −0.005 (and
+    clears the two-ctrl rule). Sub-classify NULL by residual-
+    norm trace at step 2k: `||r|| ≤ 3·sqrt(d_model) = 24` is a
+    *symmetric axis closure* to 167 (well-conditioned); `||r|| ≥
+    5·sqrt(d_model) = 40` is a *steered NULL* (binding regime,
+    optimizer ignores the gradient); 24 < `||r||` < 40 is
+    *indeterminate*. See
+    `autoresearch/ideas/198-z-loss-on-residual/idea.md` /
+    `plan.md`.
+    """
+    use_residual_zloss: bool = True
+    zloss_coef: float = 1e-4
+
+
+@dataclass
 class Tiny1M3MAVOutputCarryConfig(Tiny1M3MConfig):
     """Tiny1M3M with Cross-Block AV-Output Carry (168).
 
@@ -7176,6 +7419,49 @@ class Tiny1M3MQKClampConfig(Tiny1M3MConfig):
 
 
 @dataclass
+class Tiny1M3MBlockTempConfig(Tiny1M3MConfig):
+    """Tiny1M3M with a fixed cosine-depth attention temperature
+    schedule (193). Each block `b` multiplies its pre-softmax
+    attention score by `τ_b = 1 + α · cos(π · b / L)`, where
+    `L = n_layers` (12 at tiny1m3m) and `α = block_temp_alpha`
+    (default `-0.3` here ⇒ early-layer sharpen / late-layer soften,
+    consistent with the 175-alibi locality-rewarding prior on the
+    multiplicative depth-varying side). The buffer of `τ_b` values
+    is computed once at model construction and divided into
+    `Q·K^T/√d_k` in the manual attention path.
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`,
+    cache-mean 6.3988 ± 0.04, n=3, measured 2026-06-15). 0 new
+    parameters (the schedule is hard-coded). At `α=0` the path
+    is byte-identical to baseline (`τ_b = 1` for all `b`). Forces
+    the manual attention path so SDPA's flash kernel doesn't fuse
+    QK^T+softmax+AV. The committed single value is `α = -0.3`
+    (per the r2 sign-convention resolution in `idea.md` — `α > 0`
+    would be DRIFT-bound and is closed).
+
+    PASS: `trt_val ≤ ctrl_val − 0.01` AND clears the two-ctrl rule.
+    NULL: `|trt_val − ctrl_val| < 0.01` (closes the fixed-shape
+    depth-conditional scale axis).
+    DRIFT: `trt_val > ctrl_val + 0.01` (sharpen-early past the
+    locality-rewarding optimum).
+    CONDITIONAL: 188-qk-rms-scaling is the *learned* sibling on
+    the same axis. If 188 has reported a WIN ≥ −0.005 before 193
+    is committed to the queue, redirect 193 to a different axis
+    per the conditional in `idea.md`. Otherwise run as planned —
+    a 193 null closes the fixed-shape axis decisively; a 193 WIN
+    opens a new fixed-prior lever on the depth-conditional
+    multiplicative side.
+
+    See `autoresearch/ideas/193-blockwise-attn-temp-schedule/
+    {idea,plan}.md` for the full mechanism, the
+    sharpen-early-soften-late sign convention, and the 188-
+    conditional framing.
+    """
+    use_block_temp_schedule: bool = True
+    block_temp_alpha: float = -0.3
+
+
+@dataclass
 class Tiny1M3MLogitConvConfig(Tiny1M3MConfig):
     """Tiny1M3M with Pre-Softmax 1D Causal Depthwise Conv on QK^T (180).
 
@@ -7373,6 +7659,58 @@ class Tiny1M3MStaticKRotationConfig(Tiny1M3MConfig):
     AND clears the two-ctrl rule. NULL band |Δ| < 0.01. DRIFT >
     +0.01. See `autoresearch/ideas/185-static-per-head-k-rotation/idea.md`.
     """
+
+@dataclass
+class Tiny1M3MPerLayerKRotationConfig(Tiny1M3MConfig):
+    """Tiny1M3M with static per-layer × per-pair learned K-rotation.
+
+    A/B vs the plain tiny1m3m baseline (`Tiny1M3MConfig`, val
+    6.3988 cached at `5b8a7fea8963` ±0.04, see
+    `autoresearch/baseline-cache.json`). Each layer has its OWN
+    orthogonal rebase matrix `R_l ∈ R^{d_k × d_k}` applied to
+    K ONLY (Q untouched, post-RoPE) — parameterized as a
+    product of `d_k/2 = 8` 2D rotations on disjoint `(2i, 2i+1)`
+    planes. One learnable angle `φ_{l,i} ∈ R` per (layer, plane),
+    SHARED across heads (depth-axis: 185 varies angles across
+    heads, 200 varies angles across layers). The K-only
+    application breaks QK^T inner-product preservation (Q in
+    baseline basis, K in R_l-rotated basis) so the lever has a
+    real axis to bind on — unlike a QK-symmetric application,
+    which would be a provable no-op. `R_l` block-diagonal-
+    orthogonal preserves K's norm and the softmax temperature.
+    Init `φ_{l,i} = 0` ⇒ `cos(0)=1`, `sin(0)=0` in fp32 ⇒
+    `R_l = I_{d_k}` exactly ⇒ `K = R_l @ K = K` exactly ⇒ step-0
+    forward is bit-identical to the no-flag baseline.
+
+    Distinct from:
+      - 154-rebased-attn (WIN, fixed *random shared* rebase on
+        K and V pre-softmax): 200 is *learned, per-layer ×
+        per-pair, K-only, post-RoPE*. Different axis (depth vs
+        shared), different op (learned vs random).
+      - 172-per-head-rope-base (closed null, position-dependent
+        per-head RoPE base): 200 is *position-independent* and
+        varies per-layer, not per-head.
+      - 175-alibi-slopes (WIN, per-head additive bias on
+        scores): 200 is per-layer × per-pair *rotation* of K
+        post-RoPE, not per-head *scalar* bias on scores.
+      - 185-static-per-head-k-rotation (procedurally closed,
+        per-head × per-pair, K-only, post-RoPE): 200 is
+        *per-layer × per-pair*. Lives in a different cell of
+        the (depth × head) lever grid — 185 = head × pair,
+        200 = layer × pair. Same lever family, different axis.
+      - 192-pre-rope-qk-rotation (per-head × per-pair, Q+K,
+        pre-RoPE): 200 is *per-layer × per-pair, K-only,
+        post-RoPE*. Different per-head-vs-per-layer axis, K-
+        only vs Q+K, and post-RoPE vs pre-RoPE placement.
+
+    Param cost: `d_k/2 × n_layers = 8 × 12 = 96` params
+    (+0.001% of 0.94M — negligible). PASS ≤ ctrl − 0.005 AND
+    clears the two-ctrl rule. NULL band |Δ| < 0.01. DRIFT >
+    +0.01. See `autoresearch/ideas/200-rope-phase-offset-per-layer/idea.md`.
+    """
+    use_per_layer_k_rotation: bool = True
+
+
 @dataclass
 class Tiny1M3MPreRoPEQKRotationConfig(Tiny1M3MConfig):
     """Tiny1M3M with pre-RoPE per-head × per-pair learned Q+K

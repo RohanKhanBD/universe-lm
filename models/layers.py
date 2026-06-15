@@ -812,6 +812,24 @@ class MultiHeadAttention(nn.Module):
         # See `autoresearch/ideas/195-qk-clamp-min-max/idea.md`.
         use_qk_clamp: bool = False,
         qk_clamp_c: float = 2.0,
+        # 193 — Blockwise attention temperature schedule (fixed
+        # cosine-depth, no learned params). One scalar `τ_b ∈ R^1`
+        # per block `b ∈ [0, L-1]` where `L = n_layers` (12 at
+        # tiny1m3m), shape `τ_b = 1 + α · cos(π · b / L)`, applied
+        # to the pre-softmax attention scores as
+        # `scores_b = Q_b K_b^T / (τ_b · √d_k)`. The buffer of
+        # `τ_b` values is registered on the MHA at construction
+        # (non-Parameter `Buffer` of shape `[L]`); the per-forward
+        # cost is one elementwise divide on `[B, H, T, T]`. At
+        # `α = 0` ⇒ `τ_b = 1` for all `b` ⇒ `scores / (1·√d_k) =
+        # scores / √d_k` byte-identical to the standard pre-softmax
+        # scale. Default off → no Buffer registered, no branch
+        # taken, baseline path bit-identical. See
+        # `autoresearch/ideas/193-blockwise-attn-temp-schedule/
+        # idea.md` and `configs/llm_config.LLMConfig.use_block_
+        # temp_schedule` for the committed `α = -0.3` value.
+        use_block_temp_schedule: bool = False,
+        block_temp_alpha: float = 0.0,
         # 161 — Per-layer learnable attention temperature. The actual
         # parameter `layer_temperature ∈ R^{n_layers}` lives on the
         # MODEL (`MinimalLLM`); each MHA reads `layer_temperature
@@ -1061,6 +1079,26 @@ class MultiHeadAttention(nn.Module):
         # `autoresearch/ideas/163-v-mix-conv/idea.md`.
         use_v_mix_conv: bool = False,
         v_mix_conv_kernel: int = 3,
+        # 201 — Degenerate gMLP Spatial Gating Unit on Attention
+        # Output. See `LLMConfig.use_gmlp_sgu` in
+        # `configs/llm_config.py` for the mechanism. The SGU is
+        # allocated ONLY when `block_idx % gmlp_sgu_block_stride == 0`
+        # (per-block-stochastic) — at the default stride 3 ⇒ 4 of 12
+        # blocks at tiny1m3m (block_idx ∈ {0, 3, 6, 9}). The
+        # construction (raw `nn.Parameter(torch.empty(d_model,
+        # d_model))` + inline `.data.normal_(std=0.02)`) keeps RNG
+        # state aligned with the no-flag path. `sgu_alpha` is init
+        # at `gmlp_sgu_alpha_init=-10.0` ⇒ `sigmoid(-10) ≈ 4.5e-5`
+        # ⇒ silent at step 0 (bit-identical to baseline within fp32
+        # noise). `block_idx` defaults to 0 (single-block callers
+        # like closure tests stay safe; the gate is also on
+        # `use_gmlp_sgu` so the default-off path is unchanged).
+        # Default off → baseline path bit-identical. See
+        # `autoresearch/ideas/201-mlp-token-mixer/idea.md`.
+        use_gmlp_sgu: bool = False,
+        gmlp_sgu_block_stride: int = 3,
+        gmlp_sgu_alpha_init: float = -10.0,
+        block_idx: int = 0,
         # 188 — Cross-Block K/V Projection Sharing (Universal
         # Transformers-style learnable parameter sharing across depth,
         # Dehghani et al. ICLR 2019, arXiv:1807.03819). Each block's
@@ -1931,6 +1969,55 @@ class MultiHeadAttention(nn.Module):
             # the flag is off. `forward()` never references this
             # when `use_v_mix_conv=False` so it can be anything.
             self.v_mix_conv_weight = None
+        # 201 — Degenerate gMLP Spatial Gating Unit on attention
+        # output (Liu et al. 2021, arXiv:2105.08050, §3.1). Sits
+        # at the post-merge / pre-W_O site alongside 163 (local
+        # depthwise conv) and 175 (alibi pre-O bias). Allocated
+        # ONLY when `use_gmlp_sgu=True` AND
+        # `block_idx % gmlp_sgu_block_stride == 0` (per-block-
+        # stochastic). For 4 of 12 blocks at default stride 3.
+        # Raw `nn.Parameter(torch.empty(d_model, d_model))` plus
+        # inline `.data.normal_(std=0.02)` — NOT `nn.Linear(...)`
+        # — so the construction does NOT consume RNG via a child
+        # module's `_reset_parameters()` (the no-flag path skips
+        # this entire block, so any RNG advance here would shift
+        # the next-block qkvo_proj random init and break the
+        # no-flag step-0 byte-identity test). The 0-dim
+        # `sgu_alpha` is init at `gmlp_sgu_alpha_init` (default
+        # -10) ⇒ `sigmoid(-10) ≈ 4.5e-5` ⇒ silent at step 0
+        # (forward bit-identical to baseline within fp32 noise
+        # of one extra multiply-add — same pattern as 175-alibi-
+        # slopes / 188-cross-block-kv-share / 179-anti-causal-
+        # subheads). Default off → no Parameter registered, no
+        # forward branch taken, baseline path bit-identical. See
+        # `autoresearch/ideas/201-mlp-token-mixer/idea.md` /
+        # `plan.md`.
+        self.use_gmlp_sgu = use_gmlp_sgu
+        # Clamp to >= 1 (stride 0 would mean "every block"; stride
+        # 1 also means "every block"; stride >= 2 starts to skip).
+        # The default of 3 picks block_idx ∈ {0, 3, 6, 9} = 4 of 12
+        # blocks at tiny1m3m.
+        self.gmlp_sgu_block_stride = max(1, int(gmlp_sgu_block_stride))
+        self.block_idx = int(block_idx)
+        if (
+            self.use_gmlp_sgu
+            and (self.block_idx % self.gmlp_sgu_block_stride == 0)
+        ):
+            sgu_w = torch.empty(self.d_model, self.d_model)
+            sgu_w.data.normal_(mean=0.0, std=0.02)
+            self.sgu_W = nn.Parameter(sgu_w)
+            self.sgu_alpha = nn.Parameter(
+                torch.tensor(float(gmlp_sgu_alpha_init))
+            )
+        else:
+            # Stubs so attribute lookups are always valid even when
+            # the flag is off OR this block is on a non-stochastic
+            # stride. `forward()` never references these when
+            # `self.sgu_W is None` (the gate is on the Parameter,
+            # not the flag, so a stride-miss stays bit-identical to
+            # baseline).
+            self.sgu_W = None
+            self.sgu_alpha = None
         # 129 — YOCO: when set, the MHA reads shared K, V from the
         # `shared_kv` kwarg on `forward`, skipping the W_K, W_V
         # slices of the merged qkvo_proj. Default off → the W_K,
@@ -3762,6 +3849,41 @@ class MultiHeadAttention(nn.Module):
             K = torch.stack([K_a_new, K_b_new], dim=-1).reshape(
                 batch_size, seq_len, self.n_heads, self.d_k
             )
+        # 200 — Static per-layer × per-pair learned K-rotation
+        # (depth-axis twin of 185, shared across heads). Applied
+        # AFTER the 185 per-head branch and the GQA repeat so K is
+        # in `[B, T, n_heads, d_k]`. cos/sin broadcast over the
+        # head axis because the parameter has no head dim — every
+        # head sees the same per-plane rotation. Q is **untouched**
+        # — the K-only application breaks QK^T inner-product
+        # preservation, giving the lever a real axis to bind on
+        # (QK-symmetric application would be a provable no-op).
+        # Init `φ_{l,i} = 0` ⇒ `cos(0) = 1`, `sin(0) = 0` in fp32
+        # ⇒ K_a_new = K_a and K_b_new = K_b exactly ⇒ K unchanged
+        # at step 0 ⇒ baseline forward is bit-identical when the
+        # flag is OFF. When OFF the branch is never taken, the
+        # parameter is never built, and the forward graph is bit-
+        # identical to no-flag. See
+        # `autoresearch/ideas/200-rope-phase-offset-per-layer/idea.md`.
+        if self.use_per_layer_k_rotation:
+            cos_a = self.per_layer_k_rotation_angles.cos()  # [d_k/2]
+            sin_a = self.per_layer_k_rotation_angles.sin()  # [d_k/2]
+            # Reshape K to [B, T, H, d_k/2, 2] for the per-plane
+            # (2i, 2i+1) 2D rotation. R_l is a product of d_k/2
+            # block-diagonal 2D rotations on disjoint planes —
+            # block-diagonal ⇒ orthogonal.
+            K_pairs = K.reshape(
+                batch_size, seq_len, self.n_heads, self.d_k // 2, 2
+            )
+            K_a = K_pairs[..., 0]  # [B, T, H, d_k/2]
+            K_b = K_pairs[..., 1]  # [B, T, H, d_k/2]
+            cos_b = cos_a.view(1, 1, 1, self.d_k // 2)
+            sin_b = sin_a.view(1, 1, 1, self.d_k // 2)
+            K_a_new = K_a * cos_b - K_b * sin_b
+            K_b_new = K_a * sin_b + K_b * cos_b
+            K = torch.stack([K_a_new, K_b_new], dim=-1).reshape(
+                batch_size, seq_len, self.n_heads, self.d_k
+            )
         if self.use_k_gain:
             K = K * (1.0 + self.k_gain.view(1, 1, self.n_heads, 1))
         # 174 — xPos exponential decay on K (Sun et al. 2022,
@@ -4393,6 +4515,7 @@ class MultiHeadAttention(nn.Module):
             or self.use_per_head_temp  # 155 — Per-head temperature (manual path; force SDPA off so the score-side multiply is exact).
             or self.use_t5_rpe  # 166 — T5-RPE bucket bias (manual path; force SDPA off so the score-side additive bias is exact).
             or self.use_entmax  # 173 — Entmax-1.5: closed-form projection can't go through SDPA's flash kernel.
+            or self.use_topk_attn  # 192 — Hard top-k sparse attention: scatter write can't go through SDPA's flash kernel.
             or self.use_logit_conv  # 180 — Pre-softmax causal conv on QK^T: score-space op, must run on manual path.
             or self.use_qk_clamp  # 195 — Tight hard QK logit clamp (manual path; force SDPA off so the pre-softmax logit is exposed for clamping).
             or self.use_anti_causal_subheads  # 179 — Per-head mask fill on the upper-triangle; SDPA flash can't apply a per-head fill, so force the manual path.
@@ -4640,7 +4763,28 @@ class MultiHeadAttention(nn.Module):
                     "bhst,hH->bHst", scores, self.talking_heads_M
                 )
             # Softmax
-            if self.use_entmax:
+            if self.use_topk_attn:
+                # 192 — Hard top-k sparse attention (Touvron et al.
+                # 2021, "Going Deeper with Image Transformers" / DeiT
+                # III, arXiv:2103.17239). Per-row pre-softmax hard
+                # sparsification: keep only the k largest scores per
+                # row, scatter -inf to the rest, then softmax-
+                # renormalize over the surviving k positions. `k =
+                # min(topk_k, scores.size(-1))` is the defensive
+                # bound (handles shorter eval contexts). Applied
+                # AFTER the causal mask so -inf future positions are
+                # below the topk budget and never selected. 0 new
+                # params (`topk_k` is a config int, not a learnable
+                # scalar). Step-0 is NOT byte-identical to baseline
+                # when flag-on — same structural-lever category as
+                # 173 / 022 / 154. See
+                # `autoresearch/ideas/192-topk-attn/idea.md`.
+                k = min(self.topk_k, scores.size(-1))
+                topk_vals, topk_idx = scores.topk(k, dim=-1)
+                sparse_scores = torch.full_like(scores, float("-inf"))
+                sparse_scores.scatter_(-1, topk_idx, topk_vals)
+                attn_w = torch.softmax(sparse_scores, dim=-1)
+            elif self.use_entmax:
                 # 173 — Entmax-1.5 (Tsallis α-entmax with α=1.5).
                 # Replace `torch.softmax` with the entmax-1.5
                 # projection. Per-head α_h is derived from
@@ -4956,6 +5100,40 @@ class MultiHeadAttention(nn.Module):
             )  # [B, d_model, T]
             attn_output = h.transpose(1, 2)  # [B, T, d_model]
 
+        # 201 — Degenerate gMLP Spatial Gating Unit on attention
+        # output (Liu et al. 2021, arXiv:2105.08050, §3.1). Sits at
+        # the same post-merge / pre-W_O site as 163 (v_mix_conv,
+        # applied above) — composes additively with everything
+        # upstream and gets summed by the W_O linear below.
+        # `sgu_W is None` ⇒ this block is on a non-stochastic stride
+        # (or the flag is off) ⇒ skip silently. When present, the
+        # forward is:
+        #   z = attn_out.mean(dim=T, keepdim=True)   # [B, 1, d_model]
+        #   z = F.gelu(z)                            # nonlinearity
+        #   z = z @ sgu_W                            # [B, 1, d_model]
+        #   z = z.expand(-1, T, -1)                  # broadcast T
+        #   attn_out_post = attn_out + α · z        # α = σ(sgu_alpha)
+        # At step 0 α ≈ 4.5e-5 ⇒ the additive contribution is ≈ 0
+        # ⇒ forward output is bit-identical to the no-flag path
+        # within fp32 noise of one extra multiply-add. Composes
+        # cleanly with every preceding output-side lever
+        # (`use_head_gain`, `use_attn_output_gate`,
+        # `use_attn_output_channel_gate`, `use_gated_attn`,
+        # `use_talking_heads_out`, `use_v_mix_conv`, `_apply_output_op`)
+        # — those are multiplicative scalars / linear ops on
+        # `attn_output`, the SGU is an additive scalar broadcast that
+        # reads their combined result. Default off → no Parameter
+        # registered, no branch taken, baseline path bit-identical.
+        # See `autoresearch/ideas/201-mlp-token-mixer/idea.md` /
+        # `plan.md`.
+        if self.sgu_W is not None:
+            z = attn_output.mean(dim=1, keepdim=True)  # [B, 1, d_model]
+            z = F.gelu(z)
+            z = z @ self.sgu_W                          # [B, 1, d_model]
+            z = z.expand(-1, seq_len, -1)
+            alpha = torch.sigmoid(self.sgu_alpha)
+            attn_output = attn_output + alpha * z
+
         # 168 — AV-Output Carry: stash on layer 0 (`av_carry is None`
         # ⇒ no previous block exists), blend on layer l ≥ 1
         # (`av_carry is not None` ⇒ previous block's post-AV pre-W_O
@@ -5218,6 +5396,13 @@ class TransformerBlock(nn.Module):
         # baseline. Default off → baseline path bit-identical. See
         # `autoresearch/ideas/185-static-per-head-k-rotation/idea.md`.
         use_static_k_rotation: bool = False,
+        # 200 — Static per-layer × per-pair learned K-rotation
+        # pass-through to the inner MHA (depth-axis twin of 185,
+        # shared across heads, K-only). Init φ=0 ⇒ `R_l = I_{d_k}`
+        # exactly in fp32 ⇒ step-0 forward bit-identical to
+        # baseline. Default off → baseline path bit-identical.
+        # See `autoresearch/ideas/200-rope-phase-offset-per-layer/idea.md`.
+        use_per_layer_k_rotation: bool = False,
         # 182 — Per-head learnable attention window pass-through.
         # Default off → baseline path bit-identical. See
         # `autoresearch/ideas/182-per-head-window/idea.md`.
@@ -5424,6 +5609,12 @@ class TransformerBlock(nn.Module):
         # MultiHeadAttention (see note at the MHA `use_entmax`
         # kwarg). Default off → baseline path bit-identical.
         use_entmax: bool = False,
+        # 192 — Pre-softmax per-row hard top-k sparse attention.
+        # Passed through to MultiHeadAttention (see note at the MHA
+        # `use_topk_attn` kwarg). Default off → baseline path
+        # bit-identical.
+        use_topk_attn: bool = False,
+        topk_k: int = 512,
         # 025 — SSMax. Passed through to MultiHeadAttention (see note
         # at the MHA `use_ssmax` kwarg). Default off → baseline path
         # bit-identical.
@@ -5493,6 +5684,19 @@ class TransformerBlock(nn.Module):
         # `autoresearch/ideas/163-v-mix-conv/idea.md`.
         use_v_mix_conv: bool = False,
         v_mix_conv_kernel: int = 3,
+        # 201 — Degenerate gMLP SGU pass-through to the inner
+        # MHA. See `MultiHeadAttention.use_gmlp_sgu` for the
+        # mechanism. `block_idx` is the block's index in the
+        # build enumeration (0..n_layers-1 with `tie_layer_groups=1`
+        # the default). The SGU is allocated only when
+        # `block_idx % gmlp_sgu_block_stride == 0`, so the
+        # build-loop MUST pass a stable `block_idx` per block.
+        # Default off → baseline path bit-identical. See
+        # `autoresearch/ideas/201-mlp-token-mixer/idea.md`.
+        use_gmlp_sgu: bool = False,
+        gmlp_sgu_block_stride: int = 3,
+        gmlp_sgu_alpha_init: float = -10.0,
+        block_idx: int = 0,
         # 111 — DropPath / Stochastic Depth (Huang et al. 2016,
         # arXiv:1603.09382). Per-block Bernoulli gate during training:
         # with probability `1 - p_l` skip the whole block (residual
@@ -5805,6 +6009,12 @@ class TransformerBlock(nn.Module):
             # to the inner MHA. Default off → baseline path bit-
             # identical. See `autoresearch/ideas/185-static-per-head-k-rotation/idea.md`.
             use_static_k_rotation=use_static_k_rotation,
+            # 200 — Static per-layer × per-pair learned K-rotation
+            # pass-through to the inner MHA (depth-axis twin of
+            # 185, shared across heads, K-only). Default off →
+            # baseline path bit-identical. See
+            # `autoresearch/ideas/200-rope-phase-offset-per-layer/idea.md`.
+            use_per_layer_k_rotation=use_per_layer_k_rotation,
             # 182 — Per-head learnable attention window pass-through.
             # Default off → baseline path bit-identical. See
             # `autoresearch/ideas/182-per-head-window/idea.md`.
@@ -5831,6 +6041,11 @@ class TransformerBlock(nn.Module):
             use_fox=use_fox,
             use_softpick=use_softpick,
             use_entmax=use_entmax,
+            # 192 — Top-K sparse attention pass-through to the inner
+            # MHA. See `MultiHeadAttention.use_topk_attn` for the
+            # mechanism. Default off → baseline path bit-identical.
+            use_topk_attn=use_topk_attn,
+            topk_k=topk_k,
             use_ssmax=use_ssmax,
             use_value_residual=use_value_residual,
             # 164 — Q-Carry pass-through to MultiHeadAttention
@@ -5851,6 +6066,18 @@ class TransformerBlock(nn.Module):
             # 163 — Pass-through to MultiHeadAttention.
             use_v_mix_conv=use_v_mix_conv,
             v_mix_conv_kernel=v_mix_conv_kernel,
+            # 201 — Degenerate gMLP SGU pass-through. `block_idx`
+            # is the block's index in the build enumeration
+            # (0..n_layers-1 with `tie_layer_groups=1` the default);
+            # the SGU is allocated only when
+            # `block_idx % gmlp_sgu_block_stride == 0`. The build
+            # loop in `models/llm.py` enumerates `range(n_unique)`
+            # and passes `block_idx=i` to each block. See
+            # `autoresearch/ideas/201-mlp-token-mixer/idea.md`.
+            use_gmlp_sgu=use_gmlp_sgu,
+            gmlp_sgu_block_stride=gmlp_sgu_block_stride,
+            gmlp_sgu_alpha_init=gmlp_sgu_alpha_init,
+            block_idx=block_idx,
             # 188 — Cross-Block K/V Projection Sharing pass-through.
             # Default off → baseline path bit-identical. See
             # `autoresearch/ideas/188-cross-block-kv-share/idea.md`.

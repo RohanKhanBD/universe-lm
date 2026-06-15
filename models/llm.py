@@ -328,6 +328,13 @@ class MinimalLLM(nn.Module):
         # Default off → baseline path bit-identical. See
         # `autoresearch/ideas/185-static-per-head-k-rotation/idea.md`.
         self.use_static_k_rotation = getattr(config, "use_static_k_rotation", False)
+        # 200 — Static per-layer × per-pair learned K-rotation
+        # (depth-axis twin of 185, shared across heads, K-only).
+        # Init `φ_{l,i} = 0` ⇒ `R_l = I_{d_k}` exactly in fp32 ⇒
+        # step-0 forward is bit-identical to the no-flag baseline.
+        # Default off → baseline path bit-identical. See
+        # `autoresearch/ideas/200-rope-phase-offset-per-layer/idea.md`.
+        self.use_per_layer_k_rotation = getattr(config, "use_per_layer_k_rotation", False)
         # 182 — Per-head learnable attention window. Init
         # `head_window_logit = 10 ⇒ sigmoid(10) ≈ 0.99995 ⇒ half_w ≈
         # T − 0.00005·T > T − 1 = max|t − s|` ⇒ penalty identically 0
@@ -378,6 +385,12 @@ class MinimalLLM(nn.Module):
         # path bit-identical. See
         # `autoresearch/ideas/173-entmax-15/idea.md`.
         self.use_entmax = getattr(config, "use_entmax", False)
+        # 192 — Pre-softmax hard top-k sparse attention. topk_k is
+        # a config int (default 512 = T/4 at tiny1m3m's
+        # max_seq_len = 2048). Default off → baseline path
+        # bit-identical. See `autoresearch/ideas/192-topk-attn/idea.md`.
+        self.use_topk_attn = getattr(config, "use_topk_attn", False)
+        self.topk_k = getattr(config, "topk_k", 512)
         # 023 — Canon conv (gated depthwise causal Conv1d on the residual
         # stream). One conv per block, pre-attn pre-LN, scalar gate init
         # 0 → step-0 ≡ no-conv baseline. Default off → baseline path
@@ -467,6 +480,20 @@ class MinimalLLM(nn.Module):
         # `autoresearch/ideas/163-v-mix-conv/idea.md`.
         self.use_v_mix_conv = getattr(config, "use_v_mix_conv", False)
         self.v_mix_conv_kernel = getattr(config, "v_mix_conv_kernel", 3)
+        # 201 — Degenerate gMLP Spatial Gating Unit on attention
+        # output. Pass-through to the MHA. The SGU is allocated
+        # only when `block_idx % gmlp_sgu_block_stride == 0` —
+        # the build loop passes a stable `block_idx` per block
+        # (see `transformer_blocks` list-comprehension below).
+        # Default off → baseline path bit-identical. See
+        # `autoresearch/ideas/201-mlp-token-mixer/idea.md`.
+        self.use_gmlp_sgu = getattr(config, "use_gmlp_sgu", False)
+        self.gmlp_sgu_block_stride = getattr(
+            config, "gmlp_sgu_block_stride", 3
+        )
+        self.gmlp_sgu_alpha_init = getattr(
+            config, "gmlp_sgu_alpha_init", -10.0
+        )
         # 117 — Soft MoE (Puigcerver et al. 2024): when True, the
         # block's FFN is replaced with `SoftMoEFFN` (E parallel
         # narrower FFNs + softmax dispatch/combine). Default off →
@@ -856,6 +883,12 @@ class MinimalLLM(nn.Module):
                         # bit-identical. See
                         # `autoresearch/ideas/185-static-per-head-k-rotation/idea.md`.
                         use_static_k_rotation=self.use_static_k_rotation,
+                        # 200 — Static per-layer × per-pair learned
+                        # K-rotation pass-through (depth-axis twin
+                        # of 185, shared across heads, K-only).
+                        # Default off → baseline path bit-identical.
+                        # See `autoresearch/ideas/200-rope-phase-offset-per-layer/idea.md`.
+                        use_per_layer_k_rotation=self.use_per_layer_k_rotation,
                         # 182 — Per-head learnable attention window
                         # pass-through. Default off → baseline path
                         # bit-identical. See
@@ -912,6 +945,12 @@ class MinimalLLM(nn.Module):
                         # bit-identical. See
                         # `autoresearch/ideas/173-entmax-15/idea.md`.
                         use_entmax=self.use_entmax,
+                        # 192 — Pre-softmax hard top-k sparse attention
+                        # pass-through. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/192-topk-attn/idea.md`.
+                        use_topk_attn=self.use_topk_attn,
+                        topk_k=self.topk_k,
                         use_ssmax=self.use_ssmax,
                         use_canon_conv=self.use_canon_conv,
                         # 143 — ShortConv pass-through to the YOCO
@@ -948,6 +987,13 @@ class MinimalLLM(nn.Module):
                         # `autoresearch/ideas/163-v-mix-conv/idea.md`.
                         use_v_mix_conv=self.use_v_mix_conv,
                         v_mix_conv_kernel=self.v_mix_conv_kernel,
+                        # 201 — Degenerate gMLP SGU pass-through.
+                        # Default off → baseline path bit-identical.
+                        # See
+                        # `autoresearch/ideas/201-mlp-token-mixer/idea.md`.
+                        use_gmlp_sgu=self.use_gmlp_sgu,
+                        gmlp_sgu_block_stride=self.gmlp_sgu_block_stride,
+                        gmlp_sgu_alpha_init=self.gmlp_sgu_alpha_init,
                         use_drop_path=getattr(config, "use_drop_path", False),
                         drop_path_max=getattr(config, "drop_path_max", 0.1),
                         use_soft_moe=self.use_soft_moe,
@@ -1215,6 +1261,12 @@ class MinimalLLM(nn.Module):
                         # bit-identical. See
                         # `autoresearch/ideas/185-static-per-head-k-rotation/idea.md`.
                         use_static_k_rotation=self.use_static_k_rotation,
+                        # 200 — Static per-layer × per-pair learned
+                        # K-rotation pass-through (depth-axis twin
+                        # of 185, shared across heads, K-only).
+                        # Default off → baseline path bit-identical.
+                        # See `autoresearch/ideas/200-rope-phase-offset-per-layer/idea.md`.
+                        use_per_layer_k_rotation=self.use_per_layer_k_rotation,
                         # 182 — Per-head learnable attention window
                         # pass-through. Default off → baseline path
                         # bit-identical. See
@@ -1275,6 +1327,12 @@ class MinimalLLM(nn.Module):
                         # bit-identical. See
                         # `autoresearch/ideas/173-entmax-15/idea.md`.
                         use_entmax=self.use_entmax,
+                        # 192 — Pre-softmax hard top-k sparse attention
+                        # pass-through. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/192-topk-attn/idea.md`.
+                        use_topk_attn=self.use_topk_attn,
+                        topk_k=self.topk_k,
                         use_ssmax=self.use_ssmax,
                         use_canon_conv=self.use_canon_conv,
                         # 143 — ShortConv pass-through to the standard
@@ -1311,6 +1369,18 @@ class MinimalLLM(nn.Module):
                         # `autoresearch/ideas/163-v-mix-conv/idea.md`.
                         use_v_mix_conv=self.use_v_mix_conv,
                         v_mix_conv_kernel=self.v_mix_conv_kernel,
+                        # 201 — Degenerate gMLP SGU pass-through.
+                        # `block_idx=i` is the block's index in the
+                        # build enumeration (0..n_unique-1). The SGU
+                        # is allocated only when
+                        # `block_idx % gmlp_sgu_block_stride == 0`
+                        # (per-block-stochastic). Default off ⇒
+                        # baseline path bit-identical. See
+                        # `autoresearch/ideas/201-mlp-token-mixer/idea.md`.
+                        use_gmlp_sgu=self.use_gmlp_sgu,
+                        gmlp_sgu_block_stride=self.gmlp_sgu_block_stride,
+                        gmlp_sgu_alpha_init=self.gmlp_sgu_alpha_init,
+                        block_idx=i,
                         # 117 — Soft MoE pass-through to the block.
                         use_soft_moe=self.use_soft_moe,
                         soft_moe_n_experts=self.soft_moe_n_experts,
@@ -1611,6 +1681,23 @@ class MinimalLLM(nn.Module):
         # Output layers
         self.norm = make_norm(config.d_model, self.norm_type, self.use_layernorm)
         self.output_dropout = nn.Dropout(config.dropout)
+
+        # 198 — Residual-stream L2-norm z-loss (PaLM-style magnitude
+        # regularizer on the per-token residual, complementary to 167's
+        # logit-side z-loss). The penalty is
+        # `c · mean(log(1 + ||r||²))` where `r ∈ R^{d_model}` is the
+        # per-token final residual stream (after the final norm + output
+        # dropouts, right before the LM head) and `c = zloss_coef`. The
+        # stash lives on `self._residual_zloss` / `self._residual_norm`
+        # and is consumed by `training/trainer.py`. Default
+        # `use_residual_zloss=False` ⇒ no stash, no penalty term,
+        # baseline forward + backward is bit-identical. The
+        # `zloss_coef` reads the same default the 167 fields read
+        # (1e-4) so the off-by-default guard (`and zloss_coef > 0.0`)
+        # is the only branch that gates the forward cost. See
+        # `autoresearch/ideas/198-z-loss-on-residual/`.
+        self.use_residual_zloss = getattr(config, "use_residual_zloss", False)
+        self.zloss_coef = getattr(config, "zloss_coef", 1e-4)
 
         # OH7 UntieHead (OutputHead Batch 3 — see docs/research/output_head/plan.md):
         # separate lm_head weight from token_embedding. Costs vocab_size × d_model
@@ -2116,6 +2203,40 @@ class MinimalLLM(nn.Module):
         if self.use_tied_linear_output_mlp:
             x = self.tied_linear_output_mlp.decode(x)
         x = self.output_dropout(x)
+        # 198 — Residual-stream L2-norm z-loss. The penalty is
+        # `c · mean(log(1 + ||r||²))` where `r = x` (per-token final
+        # residual stream, after the final norm + output dropouts,
+        # right before the LM head) and `c = zloss_coef = 1e-4`. The
+        # squared-norm form
+        # `torch.log1p((x ** 2).sum(dim=-1)).mean()` avoids the
+        # extra `[B, T]`-shaped tensor that `.norm(dim=-1)` allocates.
+        # The penalty is bounded below by 0 (`log1p ≥ 0`) and
+        # unbounded above — quadratic for small `||r||`, logarithmic
+        # for large. Step-0 at d_model=64, n_layers=12: `||r|| ≈
+        # sqrt(12·Var(r)) ≈ 3.5` ⇒ `log1p(12) ≈ 2.56` ⇒
+        # `zloss_coef · 2.56 ≈ 2.56e-4`, which is `O(1e-4)` — a
+        # tiny correction at step 0. The forward graph is otherwise
+        # unchanged; the LM head still reads `x` directly.
+        # `use_residual_zloss=False` OR `zloss_coef=0.0` ⇒ the
+        # entire stash branch is skipped ⇒ baseline forward
+        # bit-identical. The trainer reads
+        # `getattr(model, "_residual_zloss", None)` and substitutes
+        # `logits.new_zeros(())` when the flag is off so the loss
+        # equation has an exact `+ 0.0` term. The
+        # `_residual_norm` stash is a *detached* (in the trainer
+        # logging path) `[B, T]`-shaped float tensor used only for
+        # the falsification signature trace (`||r||_L2` at steps
+        # `{0, 100, 500, 1000, 2000}`). See
+        # `autoresearch/ideas/198-z-loss-on-residual/idea.md`
+        # §Mechanism.
+        if self.use_residual_zloss and self.zloss_coef > 0.0:
+            self._residual_zloss = self.zloss_coef * torch.log1p(
+                (x ** 2).sum(dim=-1)
+            ).mean()
+            self._residual_norm = (x ** 2).sum(dim=-1).sqrt()
+        else:
+            self._residual_zloss = None
+            self._residual_norm = None
         # 144 — Mixture of Softmaxes: when on, replace the single
         # vocab-sized head with K parallel heads plus a per-token mix.
         # Head 0 is computed functionally from the existing tied
