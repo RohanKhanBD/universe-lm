@@ -13,3 +13,4 @@
 {"ts":"2026-06-15T16:34:00Z","agent":"code-impl","idea":"200-rope-phase-offset-per-layer","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T16:34:02Z","agent":"code-impl","idea":"200-rope-phase-offset-per-layer","from":"planning","to":"needs-run","round":1,"note":"plan+code done: per-layer x per-pair K-only static rotation, 96 params, SMOKE_OK max_abs_diff=0.0"}
 {"ts":"2026-06-15T16:34:24Z","agent":"daemon","idea":"200-rope-phase-offset-per-layer","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T16:34:42Z","agent":"daemon","idea":"200-rope-phase-offset-per-layer","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MPerLayerKRotationConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}

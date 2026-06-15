@@ -4,3 +4,5 @@
 {"ts":"2026-06-15T13:25:00Z","agent":"claude-opus-4-8","idea":"212-t5rpe-challenger","from":"needs-recode","to":"needs-run","round":1,"note":"recode: wrapped Tiny1M3MT5RPEConfig in a top-level @dataclass C (daemon build-smoke requires top-level C; bare --config_class string failed). Re-smoked locally with _box_smoke.py: SMOKE_OK."}
 {"ts":"2026-06-15T13:06:19Z","agent":"daemon","idea":"212-t5rpe-challenger","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
 {"ts":"2026-06-15T13:19:14Z","agent":"daemon","idea":"212-t5rpe-challenger","from":"running","to":"needs-recode","round":1,"note":"run FAILED (FAIL): device: auto -> CUDA: NVIDIA GeForce RTX 3060 (12.5 GB)"}
+{"ts":"2026-06-15T16:35:19Z","agent":"code-impl","idea":"212-t5rpe-challenger","from":"needs-recode","to":"recoding","round":1,"note":"claimed: TIMEOUT (12m) at step 300/732; bumping job_timeout for manual-attn T5-RPE path"}
+{"ts":"2026-06-15T16:35:40Z","agent":"auto-implement","idea":"212-t5rpe-challenger","from":"recoding","to":"needs-review","round":1,"note":"auto-fix gave up after 3 failed runs — needs a human"}
