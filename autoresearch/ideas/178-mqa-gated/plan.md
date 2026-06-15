@@ -56,3 +56,13 @@ The runner must record at end-of-training:
 
 ### Step-0 byte-identity smoke (review.md finding #2)
 CPU build smoke runs `MinimalLLM(C())` with `seed=42` and a `(1, 16)` integer input, compares the flag-on logits to a no-flag `MinimalLLM(Tiny1M3MConfig())` build at the same seed. **Verified locally: `max-abs-diff = 0.0`**. The shared K, V projection allocation does not mutate the parameter state — zero-init + zero-gate ⇒ strict bit-identity on the forward.
+
+## r2 — needs-recode (build-smoke caught a stale local commit)
+
+**Cause (daemon log 2026-06-15T06:16:53Z):** `SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MMQAGatedConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)`. The previous code-impl pass left `configs/llm_config.py`, `models/layers.py`, and `models/llm.py` modified in the working tree but never committed (HEAD is still at `3a449a2`, which predates the flag). The box's `git pull --ff-only` from origin can only advance the box's HEAD to commits present in `origin/orchestrate-codex-fallback` — the unstaged local changes were invisible to the box, so its `configs/llm_config.py` never received `Tiny1M3MMQAGatedConfig`.
+
+**Fix:** committed the implementation to a new local commit (`0653bfc 178-mqa-gated: wire per-KV-head β gate + shared K/V projection`) — 799 insertions across the three files. **Local CPU build smoke re-run with `PYTHONPATH=. python3 autoresearch/bin/_box_smoke.py _arq_178-mqa-gated.py` → `SMOKE_OK`**. The implementation itself was correct; only the box-sync was the issue.
+
+**Outstanding (for the user, not the recode agent):** the new commit lives only on the local `orchestrate-codex-fallback` branch. Until the user pushes, the box's `git pull --ff-only` will keep seeing no new commits at origin and the daemon will keep bouncing this idea back to `needs-recode` with the same `ImportError`. Per the recode protocol ("no auto-push"), the recode agent commits and releases; pushing is human-reviewed.
+
+**Round bumped to 2.** The mechanism, the artifact, and the plan are unchanged from r1; only the box-sync plumbing was fixed.
