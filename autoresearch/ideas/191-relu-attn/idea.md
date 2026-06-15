@@ -83,3 +83,18 @@ The bet, in one sharp sentence: **ReLU attention is the only published non-softm
 - 158-gau (null) — fuses attention+FFN; different lever.
 - 155-per-head-temp (null) — modifies softmax output, not replace it.
 - 184-logit-scale — global scalar on LM head output, not attention.
+
+## Plan
+- **Champion baseline**: `Tiny1M3MAlibiConfig` (val 6.2403, seed 42). Treatment subclasses it.
+- **Files**:
+  - `configs/llm_config.py` — add `use_relu_attn: bool = False` to `LLMConfig`; add `Tiny1M3MReLUAttnConfig(Tiny1M3MAlibiConfig)` with `use_relu_attn: bool = True`.
+  - `models/layers.py` — add `use_relu_attn` kwarg to `MultiHeadAttention.__init__` and to `TransformerBlock.__init__`; store as `self.use_relu_attn`; add to the manual-path-activating condition; in the manual-path "Softmax" branch, replace the final `torch.softmax` with `F.relu(scores) / (scores.sum(-1, keepdim=True) + 1e-6)` when the flag is on.
+  - `models/llm.py` — mirror the `getattr(config, "use_relu_attn", False)` pattern (used by entmax/softpick/ssmax) and pipe to both TransformerBlock constructor sites.
+- **Config flag**: `use_relu_attn: bool`. Off by default; off-path takes the standard softmax (bit-identical to champion). On-path uses ReLU+renormalize; step-0 distribution is *sparser* than softmax (half-zeros) and the design sketch in the idea acknowledges this is a documented drift, not a bug — but the lever is what Primer validates.
+- **Param count**: 0 (ReLU+normalize is parameter-free).
+- **Forces manual path**: yes — adds `or self.use_relu_attn` to the elif chain so SDPA flash is bypassed when on.
+- **Run command**:
+  ```
+  /venv/main/bin/python scripts/train.py --config_class configs.llm_config.Tiny1M3MReLUAttnConfig
+  ```
+- **Read final val loss**: `autoresearch/results/<run-id>/final_metrics.json` → `val_loss`. The daemon compares vs `champion.val` (6.2403) and promotes if `trt ≤ ctrl − 0.005`.

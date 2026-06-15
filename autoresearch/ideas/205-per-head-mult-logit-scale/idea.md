@@ -1,8 +1,8 @@
 ---
 id: 205-per-head-mult-logit-scale
-status: repitching
-round: 1
-updated: 2026-06-15T08:48:24Z
+status: needs-taste
+round: 2
+updated: 2026-06-15T08:49:32Z
 transfer-risk: low
 plain: Per-head convex interpolation between softmax(·) output and uniform 1/T (init m_h≈0 so step-0 is byte-identical); bounded on the softening side, allowing some heads to flatten toward uniform but no head can sharpen.
 ---
@@ -36,11 +36,13 @@ out_h = attn_h_post @ V_h
 - Parameters: H × L = 4 × 12 = 48 `raw_h` scalars (+0.005% of 0.94M).
 - **Asymmetric boundedness vs 155**: 155 (`scores / (τ_h · √d_k)`) lets τ_h grow or shrink — both directions available, no natural bound on the soften path (τ_h → 0 blows up scores → softmax saturates → gradients vanish). 205 restricts the optimizer to soften-only, and the soften path itself is bounded (m_h ∈ [0, 1], output stays a valid distribution).
 
-## Sharp mechanism claim (option c from r1 review)
+## Sharp mechanism claim (option c from r1 review — picked and quantified)
 
 **Claim**: at convergence, the per-head mixing values will satisfy `m_h ≪ 1` for *most* heads and `m_h > 0.05` for *at most* a small minority — i.e., the dominant direction the lever takes is *soften-only, weakly*. Predicted distribution: `|{h : m_h > 0.1}| ≤ 2/4 heads per layer` (i.e., at most half the heads use the lever meaningfully), and for those that do, `m_h ≤ 0.3`.
 
-**Why**: boundedness makes the cost of "soften a head" essentially free at init — `∂L/∂raw_h ≈ 0` when `m_h ≈ 0`, so the optimizer can move any head a small amount with negligible cost. In contrast, 155's pre-softmax form pays a real cost for any non-trivial τ_h because it perturbs the QK-magnitude scale the rest of the model was trained against (the closed 155 entry says the lever was "absorbed by Q/K gradient updates" — that's the cost). The bet is that 205 escapes the absorption failure mode not by changing the math but by changing the *cost gradient*: a small `m_h` perturbation to the attention output is a second-order effect on the LM loss surface, while a small `τ_h` perturbation to the QK scale is a first-order effect that gets immediately cancelled by Q/K updates.
+**Why** (in one sentence): **asymmetric boundedness vs 155** — 205 can only soften toward uniform, never sharpen, so the optimizer never pays the saturation cost that drags 155 into null; 155's null came from τ_h moving in BOTH directions and being absorbed by Q/K updates, while 205 restricts motion to the cheap, second-order soften direction.
+
+**Mechanistic argument**: boundedness makes the cost of "soften a head" essentially free at init — `∂L/∂raw_h ≈ 0` when `m_h ≈ 0`, so the optimizer can move any head a small amount with negligible cost. In contrast, 155's pre-softmax form pays a real cost for any non-trivial τ_h because it perturbs the QK-magnitude scale the rest of the model was trained against (the closed 155 entry says the lever was "absorbed by Q/K gradient updates" — that's the cost). The bet is that 205 escapes the absorption failure mode not by changing the math but by changing the *cost gradient*: a small `m_h` perturbation to the attention output is a second-order effect on the LM loss surface, while a small `τ_h` perturbation to the QK scale is a first-order effect that gets immediately cancelled by Q/K updates.
 
 **Prediction summary**:
 - WIN: at least one head per layer ends with `m_h > 0.1`, AND trt beats ctrl by Δ ≤ −0.01 (tighter pass-bar per r1 finding 5).
