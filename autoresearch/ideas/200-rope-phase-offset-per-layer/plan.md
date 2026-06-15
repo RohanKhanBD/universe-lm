@@ -2,16 +2,16 @@
 
 ## Flag
 - `use_per_layer_k_rotation: bool = False`
-  - `configs/llm_config.py:1398` (LLMConfig, default OFF)
-  - `configs/llm_config.py:7909` (Tiny1M3MPerLayerKRotationConfig subclass, flag ON)
-- Threaded through `models/layers.py:1549` (MHA kwarg) → `:5558` (TransformerBlock kwarg) → `models/llm.py:349` (model reads `getattr(config, ..., False)`) → pass-through at both MHA construction sites (`models/llm.py:941` and `:1342`).
+  - `configs/llm_config.py:1438` (LLMConfig, default OFF)
+  - `configs/llm_config.py:7949` (Tiny1M3MPerLayerKRotationConfig subclass, flag ON)
+- Threaded through `models/layers.py:1585` (MHA kwarg) → `:5780` (TransformerBlock kwarg) → `models/llm.py:349` (model reads `getattr(config, ..., False)`) → pass-through at both MHA construction sites (`models/llm.py:968` and `:1369`).
 
 ## Change
-1. **`models/layers.py` — `MultiHeadAttention.__init__`**: add `use_per_layer_k_rotation: bool = False` kwarg (line 1549). When True, allocate `self.per_layer_k_rotation_angles = nn.Parameter(torch.zeros(self.d_k // 2))` (line 2851) — **8 angles per block, shared across heads** (no head axis). Asserts even `d_k` for the per-pair 2D rotations (mirrors the 185 assertion pattern).
-2. **`models/layers.py` — `MultiHeadAttention.forward`**: add per-plane 2D rotation branch after the 185 static-K-rotation branch and before `use_k_gain` (line 3956). Q is **untouched**; K is reshaped `[B,T,H,d_k//2,2]` and rotated per-plane via `cos_a * K_a - sin_a * K_b`, `sin_a * K_a + cos_a * K_b` (cos/sin broadcast over the head axis). Site is post-RoPE / post-qk_norm_depth / post-GQA-repeat — matches the placement used by 185.
-3. **`models/layers.py` — `TransformerBlock.__init__`**: add pass-through kwarg `:5558` → forwarded to inner MHA at `:6238`.
-4. **`configs/llm_config.py`**: add `use_per_layer_k_rotation: bool = False` to `LLMConfig` (line 1398) and add `Tiny1M3MPerLayerKRotationConfig(Tiny1M3MConfig)` subclass with `use_per_layer_k_rotation: bool = True` (line 7909).
-5. **`models/llm.py`**: read flag from config at `:349` (with `getattr(..., False)` fallback) and pass to both MHA construction sites (`:941`, `:1342`).
+1. **`models/layers.py` — `MultiHeadAttention.__init__`**: add `use_per_layer_k_rotation: bool = False` kwarg (line 1585). When True, allocate `self.per_layer_k_rotation_angles = nn.Parameter(torch.zeros(self.d_k // 2))` (line 2979) — **8 angles per block, shared across heads** (no head axis). Asserts even `d_k` for the per-pair 2D rotations (mirrors the 185 assertion pattern).
+2. **`models/layers.py` — `MultiHeadAttention.forward`**: add per-plane 2D rotation branch after the 185 static-K-rotation branch and before `use_k_gain` (line 4111). Q is **untouched**; K is reshaped `[B,T,H,d_k//2,2]` and rotated per-plane via `cos_a * K_a - sin_a * K_b`, `sin_a * K_a + cos_a * K_b` (cos/sin broadcast over the head axis). Site is post-RoPE / post-qk_norm_depth / post-GQA-repeat — matches the placement used by 185.
+3. **`models/layers.py` — `TransformerBlock.__init__`**: add pass-through kwarg `:5780` → forwarded to inner MHA at `:6470`.
+4. **`configs/llm_config.py`**: add `use_per_layer_k_rotation: bool = False` to `LLMConfig` (line 1438) and add `Tiny1M3MPerLayerKRotationConfig(Tiny1M3MConfig)` subclass with `use_per_layer_k_rotation: bool = True` (line 7949).
+5. **`models/llm.py`**: read flag from config at `:349` (with `getattr(..., False)` fallback) and pass to both MHA construction sites (`:968`, `:1369`).
 - Step-0 ≡ baseline when flag is OFF: no Parameter registered, no branch taken, baseline forward graph is bit-identical.
 - Step-0 ≡ baseline when flag is ON: `φ_{l,i} = 0` ⇒ `cos(0) = 1.0`, `sin(0) = 0.0` in fp32 (bit-exact) ⇒ `R_l = I_{d_k}` ⇒ `K = R_l @ K = K` exactly ⇒ QK^T unchanged ⇒ loss unchanged. **Build-smoke verified**: `max_abs_diff(MinimalLLM(Tiny1M3MConfig())(ids), MinimalLLM(Tiny1M3MPerLayerKRotationConfig())(ids)) == 0.0` under seed 42. Param count: 96 angles × 4 bytes = 384 bytes (+0.001% of 0.94M).
 
