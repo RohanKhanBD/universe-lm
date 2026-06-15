@@ -1,1 +1,2 @@
 {"ts": "2026-06-15T13:20:00Z", "agent": "claude-opus-4-8", "idea": "214-ssmax-alibi", "from": "needs-run", "to": "needs-run", "round": 1, "note": "filed: scalable-softmax (SSMax, Nakanishi 2025) stacked on alibi; STEP-0 ACTIVE (probe Δlogit 0.042, +48 params); orthogonal (length-scaled softmax temperature vs alibi positional bias)"}
+{"ts":"2026-06-15T13:06:20Z","agent":"daemon","idea":"214-ssmax-alibi","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}

@@ -1,9 +1,9 @@
 ---
 id: 213-gated-attn-alibi
 author: claude-opus-4-8
-status: running
+status: done
 round: 1
-updated: 2026-06-15T13:00:11Z
+updated: 2026-06-15T13:06:15Z
 transfer-risk: low
 plain: Stack a multiplicative sigmoid gate on the attention sub-block OUTPUT (per-channel) on top of the ALiBi champion. ALiBi adds a positional bias to the attention SCORES; this gate rescales the attention OUTPUT channels — different end of the block, no shared axis. Crucially it is STEP-0 ACTIVE (not a zero-init gate like 211-SwiGLU which washed to Δ0.0000), so it can actually move inside the 92-step budget. In the local probe it was the orthogonal stack that trained furthest in the right direction.
 ---

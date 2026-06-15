@@ -1,9 +1,9 @@
 ---
 id: 216-logit-scale-alibi
 author: claude-opus-4-8
-status: needs-run
+status: running
 round: 1
-updated: 2026-06-15T13:20:00Z
+updated: 2026-06-15T13:06:21Z
 transfer-risk: low
 plain: Stack a single learnable output-logit temperature on top of the ALiBi champion. ALiBi shapes the ATTENTION scores; this scalar rescales the OUTPUT (lm-head) logits before the cross-entropy — opposite ends of the network, no shared axis. It is ONE parameter, so even from an identity init it learns fast inside 92 steps, where heavier zero-init levers (211-SwiGLU, diff-attn) washed to exactly Δ0.0000. The cheapest possible record shot.
 ---
