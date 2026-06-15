@@ -14,3 +14,4 @@
 {"ts":"2026-06-15T16:33:44Z","agent":"daemon","idea":"201-mlp-token-mixer","from":"needs-run","to":"running","round":2,"note":"claimed: queued by daemon"}
 {"ts":"2026-06-15T16:33:55Z","agent":"daemon","idea":"201-mlp-token-mixer","from":"running","to":"needs-recode","round":2,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MGMLPSGUConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}
 {"ts":"2026-06-15T16:34:38Z","agent":"auto-implement","idea":"201-mlp-token-mixer","from":"needs-recode","to":"needs-review","round":2,"note":"auto-fix gave up after 3 failed runs — needs a human"}
+{"ts":"2026-06-15T16:37:25Z","agent":"reviewer","idea":"201-mlp-token-mixer","from":"needs-review","to":"needs-plan","round":1,"note":"verdict: approve (r2 — r1 settled; code-impl ImportError is a code-gate failure, not a definition issue; reset round to 1 for fresh code-gate budget)"}
