@@ -4,3 +4,5 @@
 {"ts":"2026-06-15T08:29:17Z","agent":"reviewer","idea":"198-pre-ffn-attnmix","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T12:28:52Z","agent":"code-impl","idea":"198-pre-ffn-attnmix","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T12:28:57Z","agent":"code-impl","idea":"198-pre-ffn-attnmix","from":"planning","to":"needs-run","round":1,"note":"plan+code done; sigmoid(-10) γ on per-block FFN-input; 12 scalars total; bit-identical at step 0 (max-abs-diff 1.3e-6 in fp32 smoke); control = Tiny1M3MConfig val 6.3988±0.04"}
+{"ts":"2026-06-15T12:36:21Z","agent":"daemon","idea":"198-pre-ffn-attnmix","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T12:36:37Z","agent":"daemon","idea":"198-pre-ffn-attnmix","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MPreFFNAttnMixConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}
