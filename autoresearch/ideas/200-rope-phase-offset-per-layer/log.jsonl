@@ -10,3 +10,6 @@
 {"ts":"2026-06-15T12:05:45Z","agent":"reviewer","idea":"200-rope-phase-offset-per-layer","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T12:11:39Z","agent":"code-impl","idea":"200-rope-phase-offset-per-layer","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T12:28:13Z","agent":"orchestrator","idea":"200-rope-phase-offset-per-layer","from":"planning","to":"needs-plan","round":1,"note":"reclaim stale planning lock (16m)"}
+{"ts":"2026-06-15T16:34:00Z","agent":"code-impl","idea":"200-rope-phase-offset-per-layer","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
+{"ts":"2026-06-15T16:34:02Z","agent":"code-impl","idea":"200-rope-phase-offset-per-layer","from":"planning","to":"needs-run","round":1,"note":"plan+code done: per-layer x per-pair K-only static rotation, 96 params, SMOKE_OK max_abs_diff=0.0"}
+{"ts":"2026-06-15T16:34:24Z","agent":"daemon","idea":"200-rope-phase-offset-per-layer","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}

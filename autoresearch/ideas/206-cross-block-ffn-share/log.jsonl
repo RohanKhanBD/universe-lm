@@ -4,3 +4,6 @@
 {"ts":"2026-06-15T08:31:16Z","agent":"reviewer","idea":"206-cross-block-ffn-share","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T16:17:34Z","agent":"code-impl","idea":"206-cross-block-ffn-share","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T16:24:54Z","agent":"orchestrator","idea":"206-cross-block-ffn-share","from":"planning","to":"needs-plan","round":1,"note":"reclaim stale planning lock (7m)"}
+{"ts":"2026-06-15T16:33:46Z","agent":"code-impl","idea":"206-cross-block-ffn-share","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
+{"ts":"2026-06-15T16:33:50Z","agent":"code-impl","idea":"206-cross-block-ffn-share","from":"planning","to":"needs-run","round":1,"note":"plan+code done: α init -10 ⇒ step-0 bit-identical (verified ctrl-vs-flag-off max-abs-diff=0.0; ctrl-vs-flag-on 7.33e-6). Total params 949,128 (+24 α scalars). 1 file: _arq_206-cross-block-ffn-share.py + run.json. Coordination: parallel agent added use_deepnet_alpha kwarg in TransformerBlock.__init__ (now resolved). Mechanism: per-block W_up/W_down blend with prev block's detached copy. Subclass: Tiny1M3MFFNShareConfig"}
+{"ts":"2026-06-15T16:34:24Z","agent":"daemon","idea":"206-cross-block-ffn-share","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
