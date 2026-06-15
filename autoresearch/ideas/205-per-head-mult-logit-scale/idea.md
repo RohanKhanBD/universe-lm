@@ -1,8 +1,8 @@
 ---
 id: 205-per-head-mult-logit-scale
-status: repitching
+status: needs-repitch
 round: 1
-updated: 2026-06-15T08:28:54Z
+updated: 2026-06-15T08:45:24Z
 transfer-risk: low
 plain: Per-head convex interpolation between softmax(·) output and uniform 1/T (init m_h≈0 so step-0 is byte-identical); bounded on the softening side, allowing some heads to flatten toward uniform but no head can sharpen.
 ---

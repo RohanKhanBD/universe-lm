@@ -1,8 +1,8 @@
 ---
 id: 196-ffn-glu-mish
-status: needs-taste
+status: tasting
 round: 2
-updated: 2026-06-15T08:32:56Z
+updated: 2026-06-15T08:35:13Z
 transfer-risk: med
 plain: Swap the FFN gating activation from SiLU (in SwiGLU) to Mish (MishGLU) — inner-activation axis, distinct from the closed 170 outer-GLU axis.
 ---
