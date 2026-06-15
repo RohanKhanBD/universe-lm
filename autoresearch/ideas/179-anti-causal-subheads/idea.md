@@ -1,8 +1,8 @@
 ---
 id: 179-anti-causal-subheads
-status: needs-review
+status: rejected
 round: 1
-updated: 2026-06-15T06:35:03Z
+updated: 2026-06-15T06:35:08Z
 transfer-risk: med
 plain: Let some attention heads peek at the future during training (a small per-head gate decides), starting with every head fully causal so step-0 is byte-identical.
 ---
