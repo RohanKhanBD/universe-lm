@@ -10,3 +10,5 @@
 {"ts":"2026-06-15T06:10:35Z","agent":"reviewer","idea":"181-cross-head-rmsnorm","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T06:12:00Z","agent":"code-impl","idea":"181-cross-head-rmsnorm","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T06:23:34Z","agent":"code-impl","idea":"181-cross-head-rmsnorm","from":"planning","to":"needs-run","round":1,"note":"plan+code done"}
+{"ts":"2026-06-15T06:29:24Z","agent":"daemon","idea":"181-cross-head-rmsnorm","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T06:29:42Z","agent":"daemon","idea":"181-cross-head-rmsnorm","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MCrossHeadRMSNormConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}
