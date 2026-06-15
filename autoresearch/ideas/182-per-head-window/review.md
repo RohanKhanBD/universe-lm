@@ -1,5 +1,28 @@
 # Review log — 182 per-head-window
 
+## r2 — 2026-06-15 — verdict: approve
+
+All five r1 findings are cleanly applied. Re-walking each one against the current `idea.md`:
+
+- **(1) Step-0 byte-identical math (BLOCKING, fixed).** `W_h = 2T · sigmoid(w_h)` with `w_h_init=10` gives `W_h/2 = T · sigmoid(10) ≈ T - 0.00005·T`. At T=2048, `W_h/2 ≈ 2047.9 > max|t−s| = T−1 = 2047`, so the mask is all-ones, the `relu(|t−s| − W_h/2)` term is identically 0 everywhere, and softmax is unchanged ⇒ **byte-identical at fp32** (max-abs-diff 0.0). The dropped `β_h = sigmoid(w_h)` alternative is correctly absent — it had the same off-by-one and would be a footgun for any future resurrector. Implementer must still run the `max_abs_diff(logits, baseline_logits) < 1e-6` self-check (mirrors 154-rebased-attn), and that gate will catch any implementer who re-introduces the broken formula.
+- **(2) Single sub-lever committed.** Hard window only. Soft Gaussian decay (`λ_h·(t−s)²`) is explicitly deferred to a future idea, with the rationale ("different mechanism, different gradient dynamics") preserved. The design sketch in idea.md now points at hard-window only. No implementer choice space on the mechanism.
+- **(3) Pass/fail bar is concrete and tied to real control.** NULL band `|trt − cached_baseline| < 0.01`, WIN pass `trt ≤ cached_baseline − 0.01`, cache-authoritative WIN rule `trt < val_mean − noise_band` with `noise_band = max(0.04, 2·val_std)`. Re-pulled cache today: `val_mean = 6.3988`, `val_std = 0.0088`, `noise_band = 0.04` ⇒ **WIN iff `trt < 6.3588`**. Plan must mirror these four numbers verbatim with the run-day re-pull instruction. Two-ctrl rule cited (143-shortconv / 131-layer-drop style). Numbers in the spec match the current cache — no drift.
+- **(4) `1e9` penalty explicit.** No more `−∞` in prose; spec pins `1e9` (fp32-clean, no NaN risk, matches 154-rebased-attn). Implementation will not silently swap in `−inf` and trigger softmax NaN.
+
+Source check: BigBird (Zaheer et al., arXiv:2007.14062, NeurIPS 2020) and Longformer (Beltagy et al., arXiv:2004.05150, 2020) are real, the per-head-pattern ablation in BigBird is real, and the 100M+ scale evidence claim is honest. Not fabricated.
+
+Distinct from closed: confirmed against `autoresearch/closed.md` (no `per-head-window` entry). The closed SWA window-sweep line is a *fixed global HP*, not a per-head learnable window — different lever. Closed per-head scalars (152/155/160/166/172) are *score-magnitude* levers; 182 is a *spatial-pattern* lever, in mechanism shape with 154-rebased-attn (WIN, Δ-3.48) and 143-shortconv (borderline). 174-xpos-decay null tested learnable *decay*, not a window. **Distinct.**
+
+Implementable in < 200 LoC: `use_per_head_window: bool` config flag, +48 params (H=4 × n_layers=12), one extra `1e9 · relu(...)` term in the score path in `models/layers.py`. Thread through `TransformerBlock`. Trivial.
+
+Tiny1m3m-only: confirmed. No references to `screen20m`, the ladder, or any larger tier. Step-0 byte-identical test gives a tight falsifiability check (max-abs-diff < 1e-6 at fp32 step 0 is binary).
+
+Transfer-risk: med is honest. Windowed attention is well-validated at 100M+; per-head learnable window is novel at this scale but the locality prior is established. Scale evidence section cites BigBird (100M–300M encoder) and Longformer (100M+ encoder). The tag matches the citation.
+
+**Verdict: approve.** Sound, falsifiable, one sub-lever, distinct from closed, byte-identical at step 0, <200 LoC. Reset `round` to 1 so the code gate gets a fresh budget.
+
+---
+
 ## r1 — 2026-06-15 — verdict: revise
 
 - **Step-0 byte-identical claim is wrong (BLOCKING).** The idea proposes `W_h = T · sigmoid(w_h)` with `w_h_init=10` so `sigmoid(10) ≈ 0.99995` and `W_h ≈ T`. The mask is then `M_h(t,s) = 1 if |t−s| ≤ W_h/2`. At T=2048, `W_h/2 ≈ 1023.95`, but `max |t−s| = T−1 = 2047`. The justification in idea.md ("`|t−s| ≤ T−1 < T/2 for T ≥ 2`") is a math error — for any T > 2, `T−1 > T/2`, so the inequality runs the wrong way. The first ~1024 positions of every query fall outside the window at step 0, so `score -= 1e9 · relu(|t−s| − W_h/2) = 1e9 · ~1023 ≈ 1e12` is subtracted, and softmax zeroes those positions. The model is **not** byte-identical to baseline at step 0 — early-layer val_loss will jump ~0.1+ at fp32 (matches the 1e12 score bias pattern in past SWA-on-at-init failures). Fix one of:
