@@ -218,13 +218,19 @@ Verdict is exactly one of `accept` (definition gate calls it `approve`) /
   `needs-run`/`running`**. An idle GPU means an upstream stage is starving the
   queue — that stage is the immediate priority. No agent waits for a human to
   notice an idle box; the starving gate runs on its own.
-- **🔴 ONE SEED ONLY.** Every ablation runs at a **single fixed seed (42)** —
-  never multi-seed. No `≥3 seeds`, no seed sweeps, no per-seed means. A single
-  seed keeps each A/B cheap enough to actually run on the constrained hardware;
-  multi-seed protocols are out of scope for this pipeline. Any idea, plan, or
-  review that asks for more than one seed is **malformed** — strip it down to
-  seed 42 instead. Read a sub-noise effect as **inconclusive, not real**; do
-  not "add seeds to confirm" — log it inconclusive and move on.
+- **🔴 ONE SEED ONLY — for screening.** Every ablation **screen** runs at a
+  **single fixed seed (42)** — never multi-seed. No `≥3 seeds`, no seed sweeps,
+  no per-seed means in the funnel. A single seed keeps each A/B cheap enough to
+  actually run on the constrained hardware. Any idea, plan, or review that asks
+  for more than one seed *to screen* is **malformed** — strip it down to seed 42.
+  Read a sub-noise screen effect as **inconclusive, not real**; do not "add seeds
+  to confirm" a screen — log it inconclusive and move on.
+  **The one exception is champion promotion:** when a seed-42 screen produces a
+  *candidate WIN* (`trt < champion − 0.04`), it is **confirmed at 3 seeds
+  (`42,123,7`, band 0.02) before being crowned** — see
+  [`PROMOTION.md`](PROMOTION.md). Promotion is rare and irreversible (it pins the
+  baseline every later experiment stacks on), so it earns the extra two seeds;
+  screening never does.
 - **3-round cap — every gate.** Each gate runs its own `round` budget. On
   `round: 3` the critic may only `accept` or `reject` — `revise` is forbidden,
   forcing the call. No idea cycles more than 3 times *within a gate*; on `accept`
@@ -267,3 +273,12 @@ Verdict is exactly one of `accept` (definition gate calls it `approve`) /
 | reviser | `autoresearch/prompts/idea-reviser.md` | `needs-revision` | edits `idea.md`, `round++` |
 | code-implementer | `autoresearch/prompts/code-implementer.md` | `needs-recode`, then `needs-plan` | `plan.md` + code, → `needs-run` |
 | runner | `autoresearch/prompts/runner.md` | `needs-run` | `remote-results/<date>-vast-<tier>/{*.log,results.json}` + `evidence.md`, → `done`/`needs-recode` (and null line in `closed.md`) |
+
+## Companion docs (read these before touching the loop)
+
+| Doc | What it tells you |
+|---|---|
+| [`EXPERIMENT-DESIGN.md`](EXPERIMENT-DESIGN.md) | **How to pick a lever that can actually win** at the 92-step budget — zero-init levers wash out, the step-0-active local probe, stack-vs-challenge strategy. Read before writing an idea. |
+| [`RUN-CONTRACT.md`](RUN-CONTRACT.md) | The **mechanical** handoff to the daemon: `run.json` + the `_arq_*.py` top-level-`C` stub the build-smoke needs. |
+| [`PROMOTION.md`](PROMOTION.md) | **Crowning a champion**: screen at 1 seed (band 0.04) → confirm a winner at 3 seeds (band 0.02) before it becomes the pinned baseline. |
+| [`BASELINE-CACHE-DESIGN.md`](BASELINE-CACHE-DESIGN.md) | The box-keyed baseline cache + champion pin (`champion.json`, `baseline-cache.json`) — why baselines aren't re-measured. |
