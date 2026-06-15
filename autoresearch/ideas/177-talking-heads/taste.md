@@ -1,3 +1,51 @@
+## r2 — 2026-06-15 — verdict: accept
+- **All three r1 findings addressed in good faith.** The basis-richness argument
+  is now sharp: per-head scalars (152, 155, 160, 166) span an
+  H-dimensional affine subspace of `[H, T, T]` that Q/K/W_O rescaling can
+  absorb post-hoc (e.g. `Q' = α_h^(1/2) Q`, `K' = α_h^(1/2) K`, or a per-head
+  bias injected into Q's channel direction). The H×H cross-mix `M` is the
+  first lever in the queue to operate on a tensor axis with *no such
+  reparameterization* — `scores[b, h_new, t, s] = Σ_h M[h_new, h] · scores[…]`
+  couples heads, and there is no Q[b, h, :] or K[b, h, :] rescaling that
+  produces cross-head coupling of score values. The optimizer must use the
+  lever, not bypass it. This is the specific failure mode r1 asked for and
+  the right one.
+- **Portfolio crowding settled by the queue.** 176 (V-pre-AV-norm) is already
+  at `needs-review`; 177 is the slot the queue picked. Both are cost-tiny
+  and both target distinct axes (176 = pre-AV norm on V; 177 = cross-head
+  mix on scores/AV output). Running one per cycle is fine. Re-litigating the
+  ordering would be a third finding to no purpose.
+- **Δval band is honest.** Tightened to [-0.015, -0.035] with explicit
+  pass (Δ ≤ -0.025, clean PASS outside the 0.04 cache band and above the
+  largest per-head-scalar null), null (|Δ| < 0.015), drift (|Δ| > 0.04
+  wrong-sign ⇒ reject the cross-head-mix family at 0.94M). The lower bound
+  is still inside the null band, but the bar is the bar — "Δ ≤ -0.025" is
+  a real win claim, not "any movement outside the cache band". The
+  induction is acknowledged: the bet is "the basis is strictly richer, so
+  there's a positive probability of binding where the per-head scalars
+  didn't", not "we expect a big win".
+- **Info value of either outcome is high.** A clean PASS unlocks the
+  cross-head-mix family for Phase-2 (≥135M, H=12+) where talking-heads is
+  well-validated at 220M+ translation (arXiv:2003.02436, +1.0 BLEU). A
+  clean NULL closes the *cross-head-mix* sub-axis, completing the
+  per-head-attention-shape family closure (152, 155, 160, 166, 177 all
+  null), and redirects Phase-2 attention levers to richer architectures
+  (MQA/GQA/MLA) rather than more head-shape tuning. The information is
+  worth the slot either way.
+- **Cost is the lowest in the queue.** Mechanism is pre-built in
+  `models/layers.py` (pre-softmax M init, post-softmax M_out init,
+  application sites, `_apply_logit_op` / `_apply_output_op` aware of both
+  flags). Config flags `use_talking_heads_q` / `use_talking_heads_out`
+  already plumbed LLMConfig → MultiHeadAttention → TransformerBlock.
+  Remaining work: a config subclass + a runner entry. ~5-15 LoC.
+- **Niche-fit checks pass.** Mechanism (not HP). Identity-init-able ⇒
+  byte-identical at step 0 (max-abs-diff = 0.0 vs baseline). Two
+  independent levers enable Q-only / Out-only ablations if the joint run
+  shows signal. Transfer risk is med, mitigated by the scale-free
+  parameterization and the 220M+ translation validation.
+- **Action.** Reset `round` to 1 for the definition gate's own budget;
+  the gate will check plan/soundness, not taste.
+
 ## r1 — 2026-06-15 — verdict: revise
 - **Portfolio crowding.** Seven per-head attention-shape ideas filed/closed in the
   last 48h: 152-attn-logit-bias NULL, 155-per-head-temp NULL, 160-rms-gain-per-head
