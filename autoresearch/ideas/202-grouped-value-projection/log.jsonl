@@ -7,3 +7,4 @@
 {"ts":"2026-06-15T08:47:30Z","agent":"reviewer","idea":"202-grouped-value-projection","from":"needs-review","to":"reviewing","round":1,"note":"claimed"}
 {"ts":"2026-06-15T08:48:18Z","agent":"reviewer","idea":"202-grouped-value-projection","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T12:01:25Z","agent":"code-impl","idea":"202-grouped-value-projection","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
+{"ts":"2026-06-15T12:17:11Z","agent":"code-impl","idea":"202-grouped-value-projection","from":"planning","to":"needs-run","round":1,"note":"plan+code done"}
