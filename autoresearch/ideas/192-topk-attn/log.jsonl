@@ -8,3 +8,5 @@
 {"ts":"2026-06-15T12:03:26Z","agent":"reviewer","idea":"192-topk-attn","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T12:10:55Z","agent":"code-impl","idea":"192-topk-attn","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T12:15:22Z","agent":"code-impl","idea":"192-topk-attn","from":"planning","to":"needs-run","round":1,"note":"plan+code done"}
+{"ts":"2026-06-15T12:25:16Z","agent":"daemon","idea":"192-topk-attn","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T12:26:02Z","agent":"daemon","idea":"192-topk-attn","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MTopKAttnConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}

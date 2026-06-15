@@ -9,3 +9,5 @@
 {"ts":"2026-06-15T12:01:03Z","agent":"reviewer","idea":"196-ffn-glu-mish","from":"needs-review","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T12:15:40Z","agent":"code-impl","idea":"196-ffn-glu-mish","from":"needs-plan","to":"planning","round":1,"note":"claimed: plan+code+artifacts done"}
 {"ts":"2026-06-15T12:15:42Z","agent":"code-impl","idea":"196-ffn-glu-mish","from":"planning","to":"needs-run","round":1,"note":"MishGLUFeedForward + use_mish_glu flag + Tiny1M3MMishGLUConfig + _arq stub + run.json"}
+{"ts":"2026-06-15T12:25:16Z","agent":"daemon","idea":"196-ffn-glu-mish","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T12:26:02Z","agent":"daemon","idea":"196-ffn-glu-mish","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MMishGLUConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}

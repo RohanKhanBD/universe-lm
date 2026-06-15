@@ -10,3 +10,5 @@
 {"ts":"2026-06-15T08:57:47Z","agent":"orchestrator","idea":"195-qk-clamp-min-max","from":"planning","to":"needs-plan","round":1,"note":"reclaim stale planning lock (7m)"}
 {"ts":"2026-06-15T12:02:28Z","agent":"code-impl","idea":"195-qk-clamp-min-max","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
 {"ts":"2026-06-15T12:19:29Z","agent":"code-impl","idea":"195-qk-clamp-min-max","from":"planning","to":"needs-run","round":1,"note":"plan+code done; build-smoke SMOKE_OK; off-path bit-identical to baseline (forward diff=0.0); treatment path exercises clamp at step 0 (forward diff=0.0047, expected active-regularizer behavior)"}
+{"ts":"2026-06-15T12:25:16Z","agent":"daemon","idea":"195-qk-clamp-min-max","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
+{"ts":"2026-06-15T12:26:02Z","agent":"daemon","idea":"195-qk-clamp-min-max","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: SMOKE_FAIL: ImportError: cannot import name 'Tiny1M3MQKClampConfig' from 'configs.llm_config' (/root/universe-lm/configs/llm_config.py)"}
