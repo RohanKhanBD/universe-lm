@@ -1,8 +1,8 @@
 ---
 id: 182-per-head-window
-status: needs-recode
-round: 1
-updated: 2026-06-15T06:16:53Z
+status: needs-run
+round: 2
+updated: 2026-06-15T06:25:14Z
 transfer-risk: med
 plain: Give each attention head its own learnable "how far back should I look" window, starting with every head looking at the full sequence so step-0 is byte-identical.
 ---
