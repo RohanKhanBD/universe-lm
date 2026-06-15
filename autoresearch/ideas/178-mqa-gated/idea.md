@@ -47,3 +47,54 @@ Queue crowding acknowledged (179/180/181/182 are all attention-axis); this one e
 
 ## What the runner must record (additional metric)
 Beyond val loss, record at the end of training: per-block, per-head final `β_k_h` and `β_v_h` values (4 × 12 × 2 = 96 scalars). Cost: a single tensor dump at end-of-run. This is the primary signal — the val-loss column is secondary.
+
+## Plan
+
+**Files**
+
+- `models/layers.py` — add `use_mqa_gated: bool = False` to
+  `MultiHeadAttention.__init__` and to `TransformerBlock.__init__`.
+  When on, allocate:
+  - `self.W_K_shared = nn.Parameter(zeros(n_kv_heads·d_k, d_model))`
+  - `self.W_V_shared = nn.Parameter(zeros(n_kv_heads·d_k, d_model))`
+  - `self.mqa_gate_k = nn.Parameter(zeros(n_kv_heads))`
+  - `self.mqa_gate_v = nn.Parameter(zeros(n_kv_heads))`
+  In `forward()`, after the K, V reshape (line ~2627), apply the
+  per-KV-head blend: `K = K + β_k · (K_shared − K)`, same for V.
+  K_shared is `F.linear(x, W_K_shared).reshape(B, T, n_kv_heads, d_k)`.
+  All init is zero so the construction consumes no RNG, keeping
+  the qkvo_proj random init aligned with the no-flag baseline
+  (step-0 byte-identity). K_shared projects to `n_kv_heads·d_k`
+  (the GQA-axis size), not `d_model` — this matches the head-
+  local K, V layout at tiny1m3m where `n_kv_heads=2 ≠ n_heads=4`
+  and the head-local K is per-KV-head; for non-GQA configs the
+  two sizes are equal so the result is the same.
+- `configs/llm_config.py` — add `Tiny1M3MMQAGatedConfig` subclass
+  of `Tiny1M3MConfig` with `use_mqa_gated: bool = True`.
+- `models/llm.py` — thread `self.use_mqa_gated = getattr(config,
+  "use_mqa_gated", False)` into both TransformerBlock
+  instantiations (YOCO upper-half and standard).
+
+**Config flag**: `use_mqa_gated: bool` (default off).
+
+**Step-0 byte-identical**: β_k = β_v = 0 ⇒ `K_mix = K_local`
+exactly in fp32. The shared K, V is also zero-init so the
+W_K_shared, W_V_shared matmul produces 0 regardless of input
+(this also keeps the construction RNG-aligned with baseline).
+Verified: `max-abs-diff = 0.0` between flag-on and flag-off
+forward at step 0, same seed.
+
+**Run command** (tiny1m3m, seed 42, baseline dataset):
+```bash
+python _arq_178-mqa-gated.py
+```
+which invokes `train_llm.main()` with
+`--config_class __main__.C --seed 42
+ --dataset_path processed_data/pretrain_1B --warmup false`.
+
+**Reading the result**: from `autoresearch/records.jsonl`, the
+treatment's `val_loss` at end-of-training vs the baseline
+`Tiny1M3MConfig` (val 6.4216). The primary signal is the r2
+probe framing above: read out the per-block per-head `β_k, β_v`
+at end-of-run. The val-loss column is recorded but secondary.
+
