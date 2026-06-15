@@ -11,3 +11,4 @@
 {"ts":"2026-06-15T16:28:39Z","agent":"reviewer","idea":"199-spectral-attn-output","from":"needs-review","to":"reviewing","round":1,"note":"claimed"}
 {"ts":"2026-06-15T16:28:43Z","agent":"reviewer","idea":"199-spectral-attn-output","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T16:33:01Z","agent":"code-impl","idea":"199-spectral-attn-output","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
+{"ts":"2026-06-15T16:44:02Z","agent":"code-impl","idea":"199-spectral-attn-output","from":"planning","to":"needs-run","round":1,"note":"plan+code done: 12 γ_l scalars, 1 PI step/forward, byte-identical at step 0 (verified)"}
