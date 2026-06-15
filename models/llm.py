@@ -218,6 +218,17 @@ class MinimalLLM(nn.Module):
         self.use_k_gain = getattr(config, "use_k_gain", False)
         self.use_deep_value_embed = getattr(config, "use_deep_value_embed", False)
         self.use_ffn_embed = getattr(config, "use_ffn_embed", False)
+        # 194 — Embedding 1/sqrt(d_model) scaling (Primer-style,
+        # So et al. 2021, arXiv:2109.08668). The lever is forward-
+        # time / init-time only — 0 new parameters. The
+        # `_embed_input` method reads this flag and overrides the
+        # standard `emb_scale = sqrt(d_model)` with
+        # `1/sqrt(d_model)` when True. With the flag False (default)
+        # the existing emb_scale path is bit-identical to the
+        # baseline. See `autoresearch/ideas/194-embed-sqrt-d/idea.md`.
+        self.use_embed_sqrt_d_scaling = getattr(
+            config, "use_embed_sqrt_d_scaling", False
+        )
         self.use_qk_norm_post_rope = getattr(config, "use_qk_norm_post_rope", False)
         self.use_sliding_window = getattr(config, "use_sliding_window", False)
         self.sliding_window_size = getattr(config, "sliding_window_size", 512)
@@ -415,6 +426,41 @@ class MinimalLLM(nn.Module):
         # Default off → baseline path bit-identical. See
         # `autoresearch/ideas/186-v-carry-block/plan.md`.
         self.use_v_carry_block = getattr(config, "use_v_carry_block", False)
+        # 188 — Cross-Block K/V Projection Sharing (Universal
+        # Transformers-style learnable parameter sharing across
+        # depth, Dehghani et al. ICLR 2019, arXiv:1807.03819). Each
+        # block's K, V projection is a learnable convex blend of
+        # its own (new) projection and the previous block's
+        # projection, gated on a 0-dim scalar per side with sigmoid-
+        # bounded init at -10. Layer 0 stashes its W_K, W_V slices
+        # on `block.attention._prev_W_K` / `_prev_W_V`; the forward
+        # loop below reads them after the layer-0 call and passes
+        # them as `prev_W_K=` / `prev_W_V=` to layers 1..N-1. Per-
+        # block scalars `cross_block_alpha_K`, `cross_block_alpha_V`
+        # (init -10) live on each MHA; step-0 ≡ baseline within fp32
+        # noise of one extra multiply-add. Default off → baseline
+        # path bit-identical. See
+        # `autoresearch/ideas/188-cross-block-kv-share/idea.md`.
+        self.use_cross_block_kv_share = getattr(
+            config, "use_cross_block_kv_share", False
+        )
+        # 204 — Cross-Block Attention Score Sharing (Sukhbaatar
+        # et al. Memorizing Transformers ICLR 2022,
+        # arXiv:2203.08913 — within-model cross-block pre-softmax
+        # score-reuse lever). Each block's pre-softmax attention
+        # scores are blended with the previous block's (detached)
+        # pre-softmax scores via a learnable per-block scalar α
+        # = σ(score_share_alpha_raw) (init -10 ⇒ α ≈ 4.5e-5 ⇒
+        # scores_eff ≈ scores_self at step 0 within fp32 noise of
+        # one extra multiply-add). Layer 0 stashes its pre-softmax
+        # scores on `block.attention._prev_block_scores`; the
+        # forward loop below reads it back after the layer-0 call
+        # and passes it as `prev_block_scores=` to layers 1..N-1.
+        # Default off → baseline path bit-identical. See
+        # `autoresearch/ideas/204-cross-block-attn-score-share/idea.md`.
+        self.use_cross_block_score_share = getattr(
+            config, "use_cross_block_score_share", False
+        )
         # 163 — Post-Attention V-Mix Depthwise Conv (Hyena-style
         # residual conv on V before the O projection). Default off
         # → baseline path bit-identical. See
@@ -809,6 +855,16 @@ class MinimalLLM(nn.Module):
                         # Default off → baseline path bit-identical.
                         # See `autoresearch/ideas/186-v-carry-block/plan.md`.
                         use_v_carry_block=self.use_v_carry_block,
+                        # 188 — Cross-Block K/V Projection Sharing
+                        # pass-through. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/188-cross-block-kv-share/idea.md`.
+                        use_cross_block_kv_share=self.use_cross_block_kv_share,
+                        # 204 — Cross-Block Attention Score Sharing
+                        # pass-through. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/204-cross-block-attn-score-share/idea.md`.
+                        use_cross_block_score_share=self.use_cross_block_score_share,
                         # 163 — Post-Attention V-Mix Depthwise Conv
                         # pass-through. Default off → baseline path
                         # bit-identical. See
@@ -1018,6 +1074,11 @@ class MinimalLLM(nn.Module):
                         # baseline path bit-identical. See
                         # `autoresearch/ideas/181-cross-head-rmsnorm/idea.md`.
                         use_cross_head_rmsnorm=getattr(config, "use_cross_head_rmsnorm", False),
+                        # 191 — Per-token attention output gain.
+                        # Pass-through to the block. Default off →
+                        # baseline path bit-identical. See
+                        # `autoresearch/ideas/191-token-attn-gain/idea.md`.
+                        use_token_attn_gain=getattr(config, "use_token_attn_gain", False),
                         # 147 — DropKey: per-head Bernoulli gate on K.
                         use_drop_key=self.use_drop_key,
                         drop_key_rate=self.drop_key_rate,
@@ -1136,6 +1197,16 @@ class MinimalLLM(nn.Module):
                         # Default off → baseline path bit-identical.
                         # See `autoresearch/ideas/186-v-carry-block/plan.md`.
                         use_v_carry_block=self.use_v_carry_block,
+                        # 188 — Cross-Block K/V Projection Sharing
+                        # pass-through. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/188-cross-block-kv-share/idea.md`.
+                        use_cross_block_kv_share=self.use_cross_block_kv_share,
+                        # 204 — Cross-Block Attention Score Sharing
+                        # pass-through. Default off → baseline path
+                        # bit-identical. See
+                        # `autoresearch/ideas/204-cross-block-attn-score-share/idea.md`.
+                        use_cross_block_score_share=self.use_cross_block_score_share,
                         # 163 — Post-Attention V-Mix Depthwise Conv
                         # pass-through. Default off → baseline path
                         # bit-identical. See
@@ -1542,6 +1613,23 @@ class MinimalLLM(nn.Module):
         emb_scale = getattr(self.config, 'embedding_scale', -1.0)
         if emb_scale < 0:
             emb_scale = math.sqrt(self.config.d_model)
+        # 194 — Embedding 1/sqrt(d_model) scaling (Primer-style,
+        # So et al. 2021, arXiv:2109.08668). When the flag is on,
+        # override the standard sqrt(d_model) emb_scale with
+        # 1/sqrt(d_model) — the residual-stream input is scaled
+        # DOWN by 1/d_model relative to the baseline. This is a
+        # forward-time / init-time lever (0 new parameters); step-0
+        # loss is approximately the same as the baseline (the
+        # initial Kaiming-init LM-head produces near-uniform
+        # logits regardless of input scale, so cross-entropy on
+        # random labels is ~log(vocab_size) in both cases). The
+        # gradient signal is different (smaller-magnitude residual
+        # stream ⇒ flatter softmax ⇒ more uniform gradient across
+        # vocab tokens). `False` (default) ⇒ emb_scale path
+        # bit-identical to baseline. See
+        # `autoresearch/ideas/194-embed-sqrt-d/idea.md`.
+        if self.use_embed_sqrt_d_scaling:
+            emb_scale = 1.0 / math.sqrt(self.config.d_model)
         if self.emb_rank is None:
             x_post = tok * emb_scale
         else:
@@ -1624,6 +1712,23 @@ class MinimalLLM(nn.Module):
         # (layer 0) or the lever is off altogether. Mirrors 021's
         # `v_residual=...` and 164's `q_carry=...` plumbing.
         av_carry = None
+        # 188 — Cross-Block K/V Projection Sharing: stash the
+        # layer-0 W_K, W_V slices (detached) on `block.attention.
+        # _prev_W_K` / `_prev_W_V`; read them back after the layer-0
+        # block and pass as `prev_W_K=` / `prev_W_V=` to every layer
+        # l ≥ 1. None ⇒ MHA's `use_cross_block_kv_share` branch is
+        # the stash branch (layer 0) or the lever is off altogether.
+        # Mirrors 021's `v_residual=...` / 164's `q_carry=...` /
+        # 168's `av_carry=...` plumbing. GAU/YOCO are mutually
+        # exclusive with the lever (the stash reads the prev block's
+        # qkvo_proj slices, which don't exist in the fused GAUBlock /
+        # YOCOLlamaBlock) — guarded with the same `not self.use_gau`
+        # check as v_residual / q_carry / av_carry. YOCO
+        # (use_shared_kv=True) the MHA's own blend branch is dead
+        # and the stash writes None, so passing it forward is a
+        # safe no-op.
+        prev_W_K = None
+        prev_W_V = None
         # 129 — YOCO: `shared_kv` is the (K_g, V_g) tensor pair shared
         # across all upper-half blocks. Computed ONCE on the lower
         # half's final residual stream after the last lower-half
@@ -1710,6 +1815,17 @@ class MinimalLLM(nn.Module):
                     # identical. Mirrors 021's `v_residual=...` and
                     # 164's `q_carry=...` plumbing on the same call.
                     av_carry=av_carry,
+                    # 188 — Cross-Block K/V Projection Sharing:
+                    # forward-pass-local stash from the previous
+                    # block's W_K, W_V slices (detached at the MHA
+                    # call site). `None` on layer 0 (or when the
+                    # lever is off) → the block's `prev_W_K=` /
+                    # `prev_W_V=` kwargs are no-ops and the baseline
+                    # K, V projection path is bit-identical. Mirrors
+                    # 021's `v_residual=...` / 164's `q_carry=...` /
+                    # 168's `av_carry=...` plumbing on the same call.
+                    prev_W_K=prev_W_K,
+                    prev_W_V=prev_W_V,
                     # 150 — Cross-Layer Feedback: forward-pass-local
                     # list of pre-FFN x from the previous K blocks.
                     # The block reads from it and appends its own
@@ -1758,6 +1874,21 @@ class MinimalLLM(nn.Module):
                 # doesn't exist in the fused operator).
                 if not self.use_gau:
                     av_carry = block.attention._av_carry
+            if self.use_cross_block_kv_share and i == 0:
+                # After layer-0 MHA forward, the W_K and W_V slices
+                # of the layer-0 qkvo_proj are stashed at
+                # `block.attention._prev_W_K` / `_prev_W_V` (already
+                # `.detach()`-ed inside MHA.forward, shape
+                # `[kv_size, d_model]`). Capture for layers 1..N-1.
+                # Same `not self.use_gau` guard as v_residual /
+                # q_carry / av_carry — GAUBlock has no `.attention`
+                # attribute. YOCO: `block.attention._prev_W_K` /
+                # `_prev_W_V` are written as `None` by the MHA
+                # forward branch (shared K, V path skips the W_K,
+                # W_V stash), so the capture is a safe no-op.
+                if not self.use_gau:
+                    prev_W_K = block.attention._prev_W_K
+                    prev_W_V = block.attention._prev_W_V
             if self.use_unet_skips and i < self.unet_skip_count:
                 unet_skips.append(x)
             # 129 — YOCO: compute (K_g, V_g) once at the boundary
@@ -2000,6 +2131,11 @@ class MinimalLLM(nn.Module):
         emb_scale = getattr(self.config, 'embedding_scale', -1.0)
         if emb_scale < 0:
             emb_scale = math.sqrt(self.config.d_model)
+        # 194 — Embedding 1/sqrt(d_model) scaling (Primer-style,
+        # So et al. 2021, arXiv:2109.08668). Mirrors the lever
+        # branch in `_embed_input` so the seqmix path is consistent.
+        if getattr(self, "use_embed_sqrt_d_scaling", False):
+            emb_scale = 1.0 / math.sqrt(self.config.d_model)
         if self.emb_rank is None:
             x_post = tok_mixed * emb_scale
         else:

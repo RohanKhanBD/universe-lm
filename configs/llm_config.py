@@ -155,6 +155,24 @@ class LLMConfig:
     # identical (no Parameter registered, no branch taken). See
     # `autoresearch/ideas/161-dyt-temp/idea.md`.
     use_per_layer_temp: bool = False
+    # 188 — Per-block QK-rms scaling (a.k.a. per-block attention
+    # temperature, learned). One scalar `s_l ∈ R^1` per block,
+    # parameterized as `s_l = exp(s_param_l)` with `s_param_l`
+    # init 0 ⇒ `s_l = exp(0) = 1.0` exactly ⇒ `scores * s_l =
+    # scores` byte-identical to the baseline at step 0. The
+    # forward multiplies the pre-softmax `Q·K^T / sqrt(d_k)`
+    # scores by `s_l` BEFORE the causal mask + softmax so a
+    # learned `s_l` can sharpen (`> 1`) or flatten (`< 1`) the
+    # attention distribution for that block. Different from
+    # `use_per_layer_temp` (161 — not implemented in forward) and
+    # `use_per_head_temp` (155 — per-head within a block); 188
+    # is per-block (one scalar per MHA, shared across heads).
+    # Forces the manual attention path so SDPA's flash/efficient
+    # backends don't perturb step-0 numerics. Default off → no
+    # Parameter registered, no branch taken, baseline path
+    # bit-identical. See `autoresearch/ideas/188-qk-rms-scaling/
+    # idea.md`.
+    use_qk_rms_scaling: bool = False
     # 160 — Per-head RMS gain on the attention output (Gemma 2 /
     # Qwen 2.5). After the AV product and softmax aggregation, multiply
     # each head's output `o_h = (A·V)_h ∈ R^{T×d_k}` by a learnable
@@ -194,6 +212,26 @@ class LLMConfig:
     # baseline path bit-identical. See
     # `autoresearch/ideas/181-cross-head-rmsnorm/idea.md`.
     use_cross_head_rmsnorm: bool = False
+    # 191 — Per-token attention output gain (Shleifer et al. 2021
+    # "NormFormer" / Touvron et al. 2021 "CaiT" class-attention
+    # gain, arXiv:2110.09423). After the AV product + softmax
+    # aggregation + merge-reshape, multiply the per-position
+    # attention output by a learnable per-position scalar
+    # `(1 + γ_t)` where `γ_t ∈ R^{T_max}` is shared across
+    # batch and the d_model axis. Init γ=0 ⇒ (1 + 0) = 1
+    # exactly ⇒ `attn * 1 = attn` byte-identical to baseline
+    # at step 0 (max-abs-diff = 0.0, algebraic identity).
+    # Sits BEFORE the W_O projection, alongside the post-merge
+    # `use_v_mix_conv` (163) and `use_av_carry` (168) sites.
+    # Per-token granularity (T_max=2048 scalars/block) is a
+    # different axis from the closed per-head (160: H=4
+    # scalars), per-channel (142: d_model=64 scalars), and
+    # per-(h, k) (181: H·d_k=64 scalars) levers. Cost: T_max
+    # scalars/block × 12 blocks = 24,576 params (+2.6% of
+    # 0.94M). Default off → no Parameter registered, no branch
+    # taken, baseline path bit-identical. See
+    # `autoresearch/ideas/191-token-attn-gain/idea.md`.
+    use_token_attn_gain: bool = False
     # #107 Exclusive self-attn: subtract the component of the attention
     # output that lies along the current token's value vector. Zero-init
     # per-head coefficient → step-0 is baseline; default off keeps the
@@ -430,6 +468,22 @@ class LLMConfig:
     # bit-identical. See
     # `autoresearch/ideas/025-scalable-softmax/plan.md`.
     use_ssmax: bool = False
+    # 191 — ReLU Attention (Primer / Mercury-Style; So et al. 2021,
+    # arXiv:2109.08668). Replace the `torch.softmax` in the manual
+    # attention path with `F.relu(scores) / (scores.sum(-1, keepdim=True)
+    # + 1e-6)` — drop-in non-softmax operator that zeros negative
+    # logits and L1-normalizes the remaining positive scores to a
+    # convex combination. No parameters (ReLU+renormalize is purely
+    # functional). Default off → softmax baseline path bit-identical
+    # (the manual-path branch is not entered, the swap site is
+    # bypassed, no branch is taken). Forces the manual attention path
+    # (the post-normalize AV can't go through SDPA's flash kernel).
+    # When on at step 0 the distribution is *sparser* than softmax
+    # (half-zeros; the idea.md design sketch acknowledges this is a
+    # documented step-0 drift, not a bug — Primer validates the lever
+    # on language modeling at 100M-1.5B). See
+    # `autoresearch/ideas/191-relu-attn/idea.md`.
+    use_relu_attn: bool = False
     # 023 — Canon conv (Griffin / Mamba local-mixing, De/Smith/Fernando
     # 2024, arXiv:2402.19427; Allen-Zhu et al. Canon-layer line):
     # one causal depthwise Conv1d (kernel=3, left-pad 2) on the
@@ -526,6 +580,49 @@ class LLMConfig:
     # (+0.005% of 0.94M). See
     # `autoresearch/ideas/186-v-carry-block/plan.md`.
     use_v_carry_block: bool = False
+    # 188 — Cross-Block K/V Projection Sharing (Universal
+    # Transformers-style learnable parameter sharing across depth,
+    # Dehghani et al. ICLR 2019, arXiv:1807.03819). Each block's
+    # effective K, V projection is a learnable convex blend of its
+    # own (new) projection and the previous block's projection:
+    #   `W_K_eff = (1 − σ(α_K_raw)) · W_K_self + σ(α_K_raw) · W_K_prev`
+    # (same for V). Init `α_K_raw = α_V_raw = -10.0` ⇒
+    # `σ(-10) ≈ 4.5e-5` ⇒ the blend is numerically dominated by
+    # `W_K_self` at step 0, so the K, V projection is bit-
+    # identical (within fp32 noise) to the no-flag baseline.
+    # `prev_W_K` / `prev_W_V` are detached at the call site so
+    # the cross-block gradient is bounded to the 2 scalar α
+    # params per block. Default off → baseline path bit-
+    # identical. Cost: 2 scalars/block × 12 blocks = 24
+    # (+0.003% of 0.94M). See
+    # `autoresearch/ideas/188-cross-block-kv-share/idea.md`.
+    use_cross_block_kv_share: bool = False
+    # 204 — Cross-Block Attention Score Sharing (Sukhbaatar et al.
+    # Memorizing Transformers ICLR 2022, arXiv:2203.08913 — within-
+    # model cross-block score-reuse lever). Each block's attention
+    # scores are blended with the previous block's pre-softmax
+    # scores via a learnable per-block scalar α:
+    #   `scores_b_eff = (1 − σ(α_raw)) · scores_b_self + σ(α_raw) · scores_{b-1}.detach()`
+    # `prev_block_scores` is the PRE-SOFTMAX logit
+    # `Q_{b-1} · K_{b-1}^T / √d_k` (NOT the post-softmax attention
+    # distribution — a different lever, see review.md finding B),
+    # `.detach()`-ed so gradients flow only through `α_raw` and
+    # the current block's Q, K (never through the previous
+    # block's QK computation, mirroring the 021 / 164 / 168
+    # cross-block detach contract). Init `α_raw = -10.0` (via
+    # `score_share_alpha_init`) ⇒ `σ(-10) ≈ 4.5e-5` ⇒
+    # `scores_eff ≈ scores_self` at step 0 (max-abs-diff across
+    # all 12 blocks < 1e-4; identity at fp32 noise of one extra
+    # multiply-add). Default off ⇒ baseline path bit-identical
+    # (forward branch gated on `use_cross_block_score_share`,
+    # `score_share_alpha_raw` not registered, `_prev_block_scores`
+    # attribute never written). Forces the manual attention path
+    # (the score-blend can't go through SDPA's flash kernel).
+    # Cost: 1 scalar/block × 12 blocks = 12 α scalars (+0.001% of
+    # 0.94M). See
+    # `autoresearch/ideas/204-cross-block-attn-score-share/idea.md`.
+    use_cross_block_score_share: bool = False
+    score_share_alpha_init: float = -10.0
     # #55 layer tying (ALBERT-style): when tie_layer_groups=N, every
     # group of N consecutive blocks shares weights. The model creates
     # n_layers // N unique blocks and the forward pass cycles through
@@ -646,6 +743,24 @@ class LLMConfig:
     # the standard sqrt(d_model). Tests whether the standard
     # scaling is a hidden knob.
     embedding_scale: float = -1.0
+    # 194 — Embedding 1/sqrt(d_model) scaling (Primer-style,
+    # So et al. 2021, arXiv:2109.08668). When `True`, the
+    # `_embed_input` forward substitutes `1/sqrt(d_model)` for
+    # the standard `sqrt(d_model)` emb_scale (i.e. the residual
+    # stream input is scaled DOWN by 1/d_model relative to the
+    # baseline). The lever is forward-time / init-time only —
+    # 0 new parameters, the magnitude rescaling is computed
+    # deterministically from `d_model`. Step-0 loss is
+    # approximately the same as the baseline (the initial
+    # Kaiming-init LM-head produces near-uniform logits
+    # regardless of the input scale, so cross-entropy on
+    # random labels is ~log(vocab_size) in both cases), but
+    # the gradient signal is different (a smaller-magnitude
+    # residual stream ⇒ flatter softmax ⇒ more uniform
+    # gradient across vocab tokens). `False` ⇒ the existing
+    # emb_scale path is bit-identical to the baseline. See
+    # `autoresearch/ideas/194-embed-sqrt-d/idea.md`.
+    use_embed_sqrt_d_scaling: bool = False
     # #77 Q/K dim ratio: by default Q and K have the same dim
     # (d_k). When set != 1.0, K is widened to d_k * qk_k_ratio.
     # Tests whether asymmetric Q/K dims change dynamics.
@@ -840,6 +955,40 @@ class LLMConfig:
     # (the trt subclass doesn't override). See
     # `autoresearch/ideas/171-dropconnect-wo/idea.md`.
     dropconnect_wo_warmup_steps: int = 100
+
+    # 207 — W_O Low-Rank Bottleneck (learnable rank-r residual
+    # correction on the W_O projection, Arora et al. "Linear
+    # Algebraic Structure of Word Senses" + LoRA-style trained-
+    # from-scratch low-rank factorization, Hu et al. 2021,
+    # arXiv:2106.09685). Replace W_O with
+    #   `W_O_eff = W_O + σ(α) · (W_O_A @ W_O_B)`
+    # where `W_O_A ∈ R^{d_model × r}`, `W_O_B ∈ R^{r × d_model}`
+    # (`r = wo_rank`, default 16), and `α` is a 0-dim learnable
+    # scalar (init `wo_lowrank_alpha_init`, default −10 ⇒
+    # `σ(α) ≈ 4.5e-5` at step 0). `W_O_A` is normal-init std=0.02
+    # (matches the existing `out_proj` / `qkvo_proj` init at
+    # line 6043); `W_O_B` is **zero-init** so the rank-r
+    # correction is exactly 0 at step 0 ⇒ `W_O_eff == W_O`
+    # bit-identical at step 0. As training proceeds, the
+    # optimizer can grow `W_O_B` and `α`, activating a learnable
+    # rank-r correction that soft-bottlenecks what each
+    # attention block can write to the residual stream.
+    # Composes with 171-DropConnect (the 171 mask runs first on
+    # `w_o`, the 207 correction adds after — both are
+    # joint-by-default and individually silent at step 0).
+    # Distinct from 197-tied-wo (sharing axis), 199-spectral-norm
+    # (Lipschitz axis), 203-pre-wo-se (pre-projection axis) —
+    # 207 is the **rank** axis on W_O. Trains A, B, and base
+    # jointly from scratch (NOT the LoRA-style frozen-base
+    # adaptation; see `autoresearch/ideas/207-wo-lowrank-bottleneck/
+    # idea.md` for the joint-training caveat). Default off → no
+    # Parameter registered, no branch taken, baseline path
+    # bit-identical. See
+    # `autoresearch/ideas/207-wo-lowrank-bottleneck/idea.md` /
+    # `plan.md`.
+    use_lowrank_wo: bool = False
+    wo_rank: int = 16
+    wo_lowrank_alpha_init: float = -10.0
 
     # 151 — RoV (Rotary Value Embeddings, gated). Apply the same rotary
     # position embedding already used on Q,K to the value vector V as
@@ -6635,3 +6784,312 @@ class Tiny1M3MVCarryBlockConfig(Tiny1M3MAlibiConfig):
     """
     use_v_carry_block: bool = True
 
+
+@dataclass
+class Tiny1M3MCrossBlockKVShareConfig(Tiny1M3MAlibiConfig):
+    """Tiny1M3M with Cross-Block K/V Projection Sharing (188,
+    Universal Transformers-style learnable parameter sharing across
+    depth, Dehghani et al. ICLR 2019, arXiv:1807.03819).
+
+    Subclasses the current champion `Tiny1M3MAlibiConfig` (val
+    6.2403, band 0.04) so the lever stacks on top of the 175-alibi
+    win. With `use_cross_block_kv_share=False` this class reduces
+    to the champion — step-0 forward is bit-identical to
+    `Tiny1M3MAlibiConfig` (max-abs-diff = 0.0; verified in the
+    build smoke by toggling the flag and comparing
+    `MinimalLLM(C(use_cross_block_kv_share=False)).forward(...)`
+    logits against the champion). With
+    `use_cross_block_kv_share=True` (default), each MHA allocates
+    two 0-dim learnable scalars `cross_block_alpha_K` /
+    `cross_block_alpha_V` (init -10.0 ⇒ `σ(-10) ≈ 4.5e-5` at step
+    0) and a forward-pass-local stash of the previous block's
+    W_K, W_V slices (`.detach()`-ed). The forward applies a
+    learnable convex blend:
+
+      `W_K_eff = (1 − α_K) · W_K_self + α_K · W_K_prev.detach()`
+      `K_eff  = x · W_K_eff.T`
+      `α_K = σ(cross_block_alpha_K)`
+
+    (same for V). At step 0 `α_K ≈ 4.5e-5` ⇒ `K_eff ≈ K_self`
+    bit-identical to the champion's K projection within fp32
+    noise of one extra multiply-add. As training proceeds the
+    optimizer can grow α_K and α_V (each bounded in [0, 1] by the
+    sigmoid) to soft-share the K, V projection subspaces across
+    adjacent blocks — a learnable form of Universal Transformer
+    parameter tying on the K, V slices only.
+
+    Distinct from the existing cross-block family at this tier:
+      - 021-value-residual (WIN, Δ=−0.034): carries V *across
+        blocks via the residual stream* (post-AV, on the residual
+        stream). 188 carries W_V *projections across blocks* (pre-
+        AV, on the K, V projection matrices). Different placement
+        (projection vs residual), different mechanism (parameter
+        sharing vs carry), different trainable scope (2 scalars
+        per block vs 1).
+      - 164-q-carry (closed null, Δ=+0.036 wrong-sign at 0.94M):
+        Q-side carry, residual-stream level. 188 is K, V
+        projection-level.
+      - 168-av-output-carry (closed null): post-AV carry,
+        residual-stream level.
+      - 186-v-carry-block (needs-run): within-block V carry along
+        the time axis (different axis: time vs depth).
+
+    Composes with the closed 021 v-residual (the 188 blend
+    happens BEFORE the V_residual stash, so the layer's V is the
+    blended V; 021 reads the post-blend V at layer l ≥ 1).
+    Composes with the closed 186 within-block V-carry (the
+    post-blend V is fed into 186's depthwise conv1d; the two
+    operate on different axes and don't conflict). Mutually
+    exclusive with the 158 GAU operator (GAUBlock has no
+    `.attention` attribute and a fused MHA+FFN doesn't compose
+    with the stash/capture plumbing) and with the 129 YOCO
+    shared-KV path (YOCO's upper-half blocks use shared K, V
+    and skip the W_K, W_V slices, so the 188 blend is dead on
+    those blocks; the MHA's branch is gated on
+    `use_shared_kv` and the stash writes None, so the
+    plumbing is a safe no-op).
+
+    Param cost: 2 scalars/block × 12 blocks = 24 scalars
+    (+0.003% of 0.94M — negligible). NULL band |Δ| < 0.02
+    expected per the 164/168 cross-block null pattern. PASS
+    ≤ 6.2353. DRIFT > 6.2553. See
+    `autoresearch/ideas/188-cross-block-kv-share/idea.md` /
+    `plan.md`.
+
+    @dataclass-decorated so `use_cross_block_kv_share` default is
+    properly overridden (the dataclass-inheritance pitfall
+    documented in `_arq_161-dyt-temp.py`).
+    """
+    use_cross_block_kv_share: bool = True
+
+
+@dataclass
+class Tiny1M3MTokenAttnGainConfig(Tiny1M3MAlibiConfig):
+    """Tiny1M3M with Per-Token Attention Output Gain (191,
+    Shleifer et al. 2021 "NormFormer" / Touvron et al. 2021
+    "CaiT" class-attention gain, arXiv:2110.09423).
+
+    Subclasses the current champion `Tiny1M3MAlibiConfig` (val
+    6.4394, band 0.04) so the lever stacks on top of the
+    175-alibi win — the same stack-on pattern that 188 uses
+    for cross-block K/V sharing and that 186 uses for the
+    within-block V-carry. With `use_token_attn_gain=False`
+    this class reduces to the champion — step-0 forward is
+    bit-identical to `Tiny1M3MAlibiConfig` (max-abs-diff =
+    0.0; verified in the build smoke by toggling the flag
+    and comparing `MinimalLLM(C(use_token_attn_gain=False))
+    .forward(...)` logits against the champion). With
+    `use_token_attn_gain=True` (default), each MHA allocates
+    a per-position `token_attn_gain = nn.Parameter(zeros(T_max))`
+    and applies, after the merge-reshape, a per-position
+    scalar multiplier on the post-attention `[B, T, d_model]`
+    tensor:
+
+      `attn_post = attn_post * (1 + γ_t)`    (broadcast `[1, T, 1]`)
+      `γ_t ∈ R^T` shared across batch and d_model, init 0
+      `attn_post = W_O(attn_post)`
+
+    At step 0 γ=0 ⇒ `(1 + 0) = 1` ⇒ `attn_post` is unchanged
+    exactly ⇒ forward is byte-identical to the champion's no-
+    gain path. As training proceeds, the optimizer can grow
+    γ_t per position — the gain is a per-position soft
+    attention sink at the *output* level (which tokens'
+    attention should contribute strongly to the residual
+    stream).
+
+    Distinct from the existing gain family at this tier:
+      - 142-layer-scale (closed null): per-channel diagonal
+        `γ ∈ R^{d_model}` on the residual stream. 191 is
+        per-position, 142 is per-channel — orthogonal axes.
+      - 160-rms-gain-per-head (closed null): per-head scalar
+        `g_h ∈ R^H` post-AV. 191 is per-position (T scalars),
+        160 is per-head (H=4 scalars). 512× DOF increase.
+      - 176-v-pre-av-norm (closed null): V-side RMSNorm
+        pre-attention-product. 191 is post-merge pre-W_O.
+        Different placement, different granularity.
+      - 181-cross-head-rmsnorm (needs-run): cross-head
+        coupling on the [B, H, T, d_k] axis. 191 is per-
+        position on the [B, T, d_model] axis. 191 mutually
+        exclusive with 181 (mutex assert).
+
+    Composes with the closed 021 v-residual (191 fires pre-W_O,
+    021 carries V across blocks via the residual stream — the
+    021 path is unaffected by 191's per-position rescale).
+    Composes with the closed 186 within-block V-carry (186
+    operates on the V stream pre-AV; 191 operates on the
+    attention output post-merge — orthogonal axes, no
+    conflict). Mutually exclusive with the pre-merge post-AV
+    gates (160, 045, 024, 121, 181) per the standard "post-AV
+    composition restructures the lever" rule.
+
+    Param cost: T_max scalars/block × 12 blocks = 24,576
+    scalars (+2.6% of 0.94M — modest but well-budgeted for
+    the granularity lever). NULL band |Δ| < 0.01 expected
+    per the 160 / 142 / 176 gain-family null pattern (W_O
+    downstream absorbs the per-position magnitude variation).
+    PASS ≤ 6.4194. DRIFT > 6.4794. Sub-noise is INCONCLUSIVE
+    on one seed per the one-seed-only rule. See
+    `autoresearch/ideas/191-token-attn-gain/idea.md` /
+    `plan.md`.
+
+    @dataclass-decorated so `use_token_attn_gain` default is
+    properly overridden (the dataclass-inheritance pitfall
+    documented in `_arq_161-dyt-temp.py`).
+    """
+    use_token_attn_gain: bool = True
+
+
+
+
+@dataclass
+class Tiny1M3MCrossBlockScoreShareConfig(Tiny1M3MAlibiConfig):
+    """Tiny1M3M with Cross-Block Attention Score Sharing (204,
+    Sukhbaatar et al. Memorizing Transformers ICLR 2022,
+    arXiv:2203.08913 — within-model cross-block pre-softmax
+    score-reuse lever).
+
+    Subclasses the current champion `Tiny1M3MAlibiConfig` (val
+    6.2403, band 0.04) so the lever stacks on top of the
+    175-alibi win. With `use_cross_block_score_share=False`
+    this class reduces to the champion — step-0 forward is
+    practically baseline (max-abs-diff across all 12 blocks <
+    1e-4; verified in the build smoke by toggling the flag
+    and comparing `MinimalLLM(C(use_cross_block_score_share=
+    False)).forward(...)` logits against the champion). With
+    `use_cross_block_score_share=True` (default), each MHA
+    allocates one 0-dim learnable scalar
+    `score_share_alpha_raw` (init `score_share_alpha_init=-10.0`
+    ⇒ `σ(-10) ≈ 4.5e-5` at step 0) and a forward-pass-local
+    stash of the previous block's pre-softmax scores
+    (`.detach()`-ed, shape `[B, H, T, T]`). The forward applies
+    a learnable convex blend:
+
+      `α = σ(score_share_alpha_raw)`
+      `scores_eff = (1 − α) · scores_self + α · scores_{b-1}.detach()`
+
+    `scores_self = Q · K^T / √d_k` is the standard pre-softmax
+    logit (NOT the post-softmax attention distribution —
+    that's a different lever; see review.md finding B). At
+    step 0 `α ≈ 4.5e-5` ⇒ `scores_eff ≈ scores_self` within
+    fp32 noise of one extra multiply-add. As training
+    proceeds the optimizer can grow `α` (bounded in [0, 1]
+    by the sigmoid) to softly re-use the previous block's
+    attention pattern — a learnable "attention-pattern
+    persistence" lever across depth.
+
+    Distinct from the existing cross-block family at this
+    tier:
+      - 021-value-residual (WIN, Δ=−0.034): carries V
+        *across blocks via the residual stream* (post-AV, on
+        the residual stream). 204 carries pre-softmax scores
+        *inside the MHA* (pre-softmax, on the QK^T logit).
+        Different placement (MHA vs residual), different
+        mechanism (score persistence vs value carry).
+      - 164-q-carry (closed null, Δ=+0.036 wrong-sign):
+        Q-side carry, residual-stream level. 204 is on the
+        QK^T logit, not on Q alone.
+      - 168-av-output-carry (closed null): post-AV carry,
+        residual-stream level. 204 is pre-softmax, MHA-
+        internal.
+      - 186-v-carry-block (needs-run): within-block V carry
+        along the time axis (different axis: time vs depth).
+      - 188-cross-block-kv-share (implementing): K, V
+        projection-level sharing across blocks. 204 is on the
+        post-projection QK^T logit. 188 operates BEFORE the
+        scores are computed; 204 operates AFTER (so they
+        compose cleanly: 188 first blends W_K_eff and
+        W_V_eff, then 204 produces QK_eff^T and blends with
+        the prev block's QK^T logit).
+
+    Composes with the closed 021 v-residual (204 fires pre-
+    softmax, 021 carries V across blocks via the residual
+    stream — orthogonal axes). Composes with the closed 186
+    within-block V-carry (186 operates on V pre-AV; 204
+    operates on QK^T logit — orthogonal). Mutually exclusive
+    with the 158 GAU operator (GAUBlock has no `.attention`
+    attribute and a fused MHA+FFN doesn't compose with the
+    score-blend plumbing) and with the 129 YOCO shared-KV
+    path on the upper-half blocks (YOCO's upper-half blocks
+    skip the qkvo_proj K, V slices; the 204 blend is dead on
+    those blocks — the model loop guards the prev-block-
+    scores stash with the same `not self.use_gau` check used
+    by 021 / 164 / 168 / 188).
+
+    Param cost: 1 scalar/block × 12 blocks = 12 scalars
+    (+0.001% of 0.94M — the cheapest cost profile in the
+    cross-block family; 021/164/168 also 12, 188 = 24). NULL
+    band |Δ| < 0.02 expected per the 164 / 168 / 188 cross-
+    block null pattern. PASS ≤ 6.2203. DRIFT > 6.2603. See
+    `autoresearch/ideas/204-cross-block-attn-score-share/idea.md`
+    / `plan.md`.
+
+    @dataclass-decorated so `use_cross_block_score_share`
+    default is properly overridden (the dataclass-inheritance
+    pitfall documented in `_arq_161-dyt-temp.py`).
+    """
+    use_cross_block_score_share: bool = True
+
+
+@dataclass
+class Tiny1M3MEmbedSqrtDConfig(Tiny1M3MAlibiConfig):
+    """Tiny1M3M with 1/sqrt(d_model) embedding scaling (194, Primer-
+    style, So et al. 2021, arXiv:2109.08668 — "scaled initialization"
+    that scales the embedding by `1/sqrt(d_model)` so the residual
+    stream's magnitude is matched to the LM head's `O(1/sqrt(d_model))`
+    weight magnitude).
+
+    Subclasses the current champion `Tiny1M3MAlibiConfig` (val
+    6.2403, band 0.04) so the lever stacks on top of the 175-alibi
+    win — the same stack-on pattern that 188, 191, 204 use.
+    With `use_embed_sqrt_d_scaling=False` this class reduces to
+    the champion (the lever branch in `_embed_input` is gated and
+    the standard `emb_scale = sqrt(d_model)` path is bit-identical
+    to the baseline). With `use_embed_sqrt_d_scaling=True`
+    (default), `_embed_input` overrides the standard
+    `emb_scale = sqrt(d_model)` with `1/sqrt(d_model)` — the
+    residual-stream input is scaled DOWN by `1/d_model` relative
+    to the baseline. No new parameters (the rescaling is computed
+    deterministically from `d_model`).
+
+    Step-0 loss is approximately the same as the baseline (the
+    initial Kaiming-init LM-head produces near-uniform logits for
+    any input scale, so cross-entropy on random labels is
+    ~log(vocab_size) in both cases) — the lever does NOT introduce
+    a step-0 loss divergence. The gradient signal IS different: a
+    smaller-magnitude residual stream ⇒ flatter softmax at the
+    output ⇒ more uniform gradient across vocab tokens, which the
+    Primer paper reports as a net positive at 100M-1.5B. The lever
+    is a "soft reparameterization" — the optimizer must adapt the
+    LM head to the new scale over the first few hundred steps
+    (the re-fit cost is amortized by 92 steps only if the underlying
+    mechanism is real; if not, the re-fit cost is wasted compute).
+
+    Distinct from the closed axes at this tier:
+      - 159-emb-layernorm (NULL, DRIFT): full LayerNorm on the
+        embedding output — a *directional* change (the LN alters
+        the per-token direction) plus a magnitude rescaling.
+        194 is a *scalar* multiplication — preserves the
+        per-token direction and only rescales the magnitude.
+        The 159 DRIFT is attributed to the directional change
+        (re-fit cost on rescaled directions); 194 avoids the
+        directional re-fit because directions are unchanged.
+      - 130-rezero, 142-layerscale (NULL): depth-conditional
+        residual-stream levers (per-block `α=0` init, no per-
+        step overhead). 194 is init-time / forward-time
+        scalar, applies to the *embedding* (not per-block).
+      - 183-pre-lm-head-rmsnorm (NULL): output-side norm. 194
+        is input-side scalar, no new params.
+      - 017-sub-ln-sandwich (NULL): depth-conditional LN
+        placement. 194 is a single scalar at the input.
+
+    Param cost: **0** (forward-time / init-time scaling). NULL
+    band |Δ| < 0.01 expected (the hand-tuned `sqrt(d_model)` is
+    already near-optimal for tiny1m3m). PASS ≤ 6.2353. DRIFT >
+    6.2503. See `autoresearch/ideas/194-embed-sqrt-d/idea.md`
+    / `plan.md`.
+
+    @dataclass-decorated so `use_embed_sqrt_d_scaling` default
+    is properly overridden (the dataclass-inheritance pitfall
+    documented in `_arq_161-dyt-temp.py`).
+    """
+    use_embed_sqrt_d_scaling: bool = True
