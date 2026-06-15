@@ -8,3 +8,4 @@
 {"ts":"2026-06-15T05:56:11Z","agent":"reviewer","idea":"179-anti-causal-subheads","from":"needs-review","to":"reviewing","round":3,"note":"claimed"}
 {"ts":"2026-06-15T05:56:55Z","agent":"reviewer","idea":"179-anti-causal-subheads","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T06:01:13Z","agent":"code-impl","idea":"179-anti-causal-subheads","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
+{"ts":"2026-06-15T06:09:29Z","agent":"code-impl","idea":"179-anti-causal-subheads","from":"planning","to":"needs-run","round":1,"note":"plan+code done"}
