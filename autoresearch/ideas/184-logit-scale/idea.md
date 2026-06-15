@@ -1,8 +1,8 @@
 ---
 id: 184-logit-scale
-status: implementing
+status: needs-review
 round: 1
-updated: 2026-06-15T07:15:21Z
+updated: 2026-06-15T07:17:15Z
 transfer-risk: low
 plain: Multiply all the language-model output logits by one learned scalar (a single dials-up-or-down knob for the model's confidence), starting at 1 so step-0 is byte-identical to the baseline.
 ---

@@ -65,3 +65,19 @@ The bet, in one sharp sentence: **the pre-LM-head norm is the most widely-adopte
 - 142-layerscale, 130-rezero, 017-sub-ln-sandwich — depth-conditional residual-stream levers, all null at 12L. 183 is NOT depth-conditional (single global norm, applied once at the end). Distinct.
 - 021-value-residual (WIN), 168-av-output-carry (null), 164-q-carry (null) — cross-block V/Q carry. 183 is *not* a carry; it's a static normalization. Distinct.
 - 016-qk-norm (WIN) — pre-softmax attention normalization. 183 is *output-side*, pre-LM-head. Different placement.
+
+## Plan
+
+- **Files**:
+  - `configs/llm_config.py` — add `use_pre_lm_head_rmsnorm: bool = False` to the `LLMConfig` base, and a `Tiny1M3MPreLMHeadRMSNormConfig(Tiny1M3MAlibiConfig)` subclass with `use_pre_lm_head_rmsnorm: bool = True` (stacks on the current champion).
+  - `models/llm.py` — in `MinimalLLM.__init__`, when the flag is on, register `self.pre_head_norm = nn.RMSNorm(config.d_model, eps=1e-6)` (default `weight=1, bias=0` survives the global `_init_weights`) and `self.pre_head_scale = nn.Parameter(torch.zeros(()))` (scalar gate). In `_run_post_embed`, after `self.output_dropout(x)` and before the `lm_head` call, apply the gated mix `x = (1 − scale) · x + scale · RMSNorm(x)`. With flag off, the modules are not built and the forward path is byte-identical to the champion. With flag on at step 0, `scale = 0` ⇒ the mix is exactly `x`, byte-identical to the champion.
+  - `_arq_183-pre-lm-head-rmsnorm.py` (repo root, same convention as `_arq_175-alibi-slopes.py`) — subclass `Tiny1M3MPreLMHeadRMSNormConfig` and call `train_llm.main()` with the standard tiny1m3m/seed-42 args.
+- **Config flag**: `use_pre_lm_head_rmsnorm: bool = False`. Default off; baseline path is byte-identical.
+- **Step-0 identity**: with the gate-form `y = (1 − scale)·x + scale·RMSNorm(x)` and `scale = 0` init, the output is exactly `x` for every token, in fp32 (no rounding, no rescaling, no dropout interaction). The optimizer grows `scale` toward `1` to engage the RMSNorm; the param count is 1 scalar (AdamW) + 64 gain weights (Muon) at d_model=64.
+- **Param count**: 64 (RMSNorm gain) + 1 (scalar gate) = 65 extra params (+0.007% of 0.94M). Negligible.
+- **Run command**:
+  ```
+  /venv/main/bin/python _arq_183-pre-lm-head-rmsnorm.py
+  ```
+  on the RTX 3060 box at `tiny1m3m`, seed 42. Champion reference: `autoresearch/champion.json` (`Tiny1M3MAlibiConfig`, val 6.2403, band 0.04).
+- **Read val**: tail `autoresearch/records.jsonl` for the matching trt record; the daemon's judge compares `trt_val` against the champion `val` and the cached `baseline-cache.json` 175-box (val_mean 6.3988, band 0.04). Sub-noise (|Δ| < 0.005) is logged NULL with `cache_authoritative: true` per the one-seed-only rule.
