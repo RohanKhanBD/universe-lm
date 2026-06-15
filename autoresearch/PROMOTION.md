@@ -33,9 +33,22 @@ champion val. The daemon's existing gate:
 candidate WIN  ⟺  trt_val < champion_val − 0.04
 ```
 
-`0.04 ≈ 2σ` of single-run noise at tiny1m3m. A result inside the band is
-**NULL / inconclusive** — logged to `closed.md`, never promoted, never "confirmed
-with more seeds." Most ideas end here. **Do not promote off a Stage-1 result.**
+A result inside the band is **NULL / inconclusive** — logged to `closed.md`,
+never promoted, never "confirmed with more seeds." Most ideas end here. **Do not
+promote off a Stage-1 result.**
+
+> ⚠️ **The 0.04 band is wrong for screening — it is cross-box drift, not paired
+> noise.** Measured 2026-06-15 from all 21 ctrl runs in `remote-results/`:
+> - **within-session** (same box, same day, fixed seed/data): 1σ ≈ **0.017**, 2σ ≈ 0.033
+> - **cross-day / cross-box drift**: 1σ ≈ **0.039**
+>
+> 0.04 is 2σ of the *worst* (cross-box) noise. The whole 208–216 alibi+X batch
+> landed at Δ 0.005–0.025 — all swallowed by the band, all NULL. If any was a real
+> +0.01–0.02 stacking win, this screen **cannot see it** (this is exactly the
+> regime modded-nanogpt / parameter-golf resolve, by pairing treatment vs control
+> in the *same* session and averaging seeds, never letting drift in). **Fix:** judge
+> each treatment paired against a same-session/same-box control + ≥3-seed median,
+> which collapses drift → a real ~0.01–0.015 band. Not yet wired into `finalize_one`.
 
 ### Stage 2 — CONFIRM (3 seeds, band 0.02) — required before any promotion
 Only a Stage-1 candidate WIN enters Stage 2. Run **both** the challenger and the
