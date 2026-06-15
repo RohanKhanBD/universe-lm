@@ -1,8 +1,8 @@
 ---
 id: 173-entmax-15
-status: repitching
-round: 1
-updated: 2026-06-15T01:49:12Z
+status: needs-taste
+round: 2
+updated: 2026-06-15T01:51:33Z
 transfer-risk: med
 plain: Replace softmax attention with a learnable sparse-attention operator that smoothly interpolates between dense softmax and hard sparsemax, starting exactly at softmax so step-0 is byte-identical.
 ---
@@ -97,8 +97,120 @@ for entmax specifically. A win unlocks the lever family for Phase-2
 ≥135M where the attention sparsity hypothesis has more gradient signal
 to develop. Distinct from 025-SSMax (per-head temperature) and 148-focal-mod
 (replaces attention) — entmax-1.5 *is* softmax at step 0 and only
-departs via the learned α_h, so the lever is bit-identical at init and
-the departure is smooth.
+departs via the learned **α_h**, so the lever is bit-identical at init
+and the departure is smooth.
+
+## Why it's worth a slot (r2)
+
+**Sharp mechanistic bet.** The binding constraint at 0.94M/12L/4H/3M
+tokens is **gradient signal per token on per-head-attention-shape
+axes**. There are 92 update steps, and 8 prior per-head-attention-shape
+levers (152 logit-bias, 155 temp, 160 post-AV gain, 162 Q-only-norm,
+165 K-only-norm, 166 T5-RPE) all closed in-band null at this tier
+because **smooth-perturbation directions get absorbed by the existing
+Q/K gradient updates** — the lever's gradient is small and
+Q/K-norm-redundant. The two softmax-*replacement* siblings (148
+focal-mod, 156 moa) also closed (148: replaces attention with
+gated-additive context; 156: injects capacity via router). Entmax-1.5
+is the only post-init lever in the family that is **not** a smooth
+perturbation — replacing softmax with the α=1.5 simplex projection
+introduces a **hard zero-mass regime** (bottom ~70% of K positions
+receive p=0 ⇒ ∂L/∂V_i=0 exactly, not approximately small). At
+α_h>1 the lever is **non-perturbative**: a single bit of α_h movement
+crosses a discontinuity in ∂L/∂V for the zeroed-out rows. Either the
+optimizer exploits this (WIN), or the discrete operator change
+destabilizes the gradient floor that 8 prior siblings hid inside
+(DRIFT). The bet is on the **discrete operator change**, not on a
+smooth correction.
+
+**Differentiation from the 8 prior nulls (the one the r1 reviewer
+asked for).** Three families in the softmax-shape axis at 0.94M:
+
+1. **Operator perturbation** (152, 155, 160, 162, 165, 166) — smooth,
+   small-Lipschitz levers on the softmax output. Absorbed by Q/K
+   gradient updates. The lever has a small axis and a small gradient.
+2. **Operator replacement (non-attention)** (148) — focal modulation
+   *replaces the attention block* with a gated-additive context.
+   Not a softmax-shape lever; a different architecture.
+3. **Capacity injection** (156, plus 117/118/146) — MoE/router/expert
+   levers that *add* parameters to the attention or FFN path.
+   Capacity-budget axis, not a softmax-shape axis.
+
+Entmax-1.5 is **none of these three**. It is the only post-init lever
+that is **(a) bit-identical to softmax at step 0** (α_h=1 ⇒
+entmax-1.5=softmax in the continuous limit; the bisection collapses
+to the standard softmax projection) **AND (b) a non-perturbative
+operator change** as α_h moves. The lever is **isolated to the α_h
+axis by construction** — there is no other parameter to absorb. The
+"we are softmax at step 0" framing is the strongest differentiation,
+and the discrete-sparsity framing makes the test **stronger** than
+the 6 smooth siblings: a smooth lever's null is consistent with
+"gradient was too weak to push the lever." A non-smooth lever's null
+is consistent only with "the operator change is genuinely not
+helpful at this tier."
+
+**Honest Δ prior (committed).** With 8 nulls in the family, the
+prior on a per-head-attention-shape lever at 0.94M is heavily
+weighted toward the in-band null. The r1 Δ range [-0.005, -0.020]
+had 60% of its mass inside the |Δ|<0.01 null band — that was
+optimistic. The honest r2 prior: **70% in-band null (|Δ|<0.01),
+20% mild WIN (Δ ∈ [-0.01, -0.03]), 10% DRIFT (Δ > +0.01) or
+strong WIN (Δ < -0.05)**. The reviewer asked for a stronger
+commitment; I commit to **Δ ≤ -0.015 OR clear DRIFT (Δ ≥ +0.05) as
+the bar for "lever binds at this tier"** — anything inside the null
+band is a clean close, not a WIN. This is a tight bar; the lever
+either wins meaningfully or fails meaningfully.
+
+**What a null teaches (the info-value case).** The 70% in-band null
+is the most likely outcome and **closes the softmax-replacement axis
+with a non-perturbative test**. The close line reads:
+*"operator-replacement (entmax-1.5) closes alongside operator-
+perturbation (152/155/160/162/165/166) and capacity-injection
+(156/117/118/146) — no softmax-shape lever binds at
+0.94M/12L/4H/92 update steps; re-evaluate the family at Phase-2
+≥135M where per-token gradient signal is ~140× larger."* A null
+from entmax-1.5 is a **stronger** null than the 8 prior siblings
+because the lever is non-smooth and isolated to one axis — if even
+a non-perturbative operator change can't bind at this tier, the
+soft-perturbation nulls are confirmed by an independent test.
+A WIN (Δ ≤ -0.015) unlocks the lever family for Phase-2 (the
+operator-replacement axis). A DRIFT (Δ ≥ +0.05) confirms the
+discrete operator change destabilizes the gradient and rules out
+the family for re-evaluation at Phase-2 (saves a Phase-2 slot).
+
+**Field-veto signal addressed.** 6+ years of softmax dominance in
+production LMs is a real soft negative. The mechanism's target
+metric is *gradient sparsity on the bottom K rows*, not perplexity
+per se — perplexity is the metric where softmax wins. Entmax-1.5
+needs a downstream task that *rewards* sparse attention
+(long-context retrieval, structured attention) to show a clear
+edge. We are not running that task. What we *are* doing is a clean
+ablation of the operator at our tier; that ablation is informative
+regardless of the result. The field veto says "entmax-1.5 doesn't
+help perplexity at production scale" — and the close line will
+read exactly that. The 6 years of softmax dominance don't argue
+against running the ablation; they argue that the close is the
+likely outcome, and that is a known outcome.
+
+**Distinct from in-repo winners.** 025-SSMax (per-head
+length-dependent temperature, WIN w/ caveat Δ=-0.091) is a
+*scaling* lever on softmax (multiplies the temperature by
+`1 + α_h·log(seq_pos)`). Entmax-1.5 is an *operator* replacement.
+They are orthogonal: SSMax is a small smooth lever that binds
+because the temperature axis has a strong per-head gradient
+(L=12 gives 12 distinct seq-position patterns). Entmax-1.5 has
+no per-head axis to exploit *except* the operator change.
+148-focal-mod (NULL) *replaces* the attention block; entmax-1.5
+*replaces the softmax inside* the attention block. Different
+mechanism, different failure mode, different slot.
+
+**A milder entmax-1.2 variant — deferred.** The r1 reviewer
+suggested entmax-1.2 (closer to softmax, only mildly sparse) as a
+"small dose" play. I defer this to a follow-up: if r2 entmax-1.5
+nulls, the close line points at entmax-1.2 as the next test in
+the family (with the same r2 bar). Splitting the r2 slot into
+1.5+1.2 doubles the run budget and dilutes the signal; a clean
+entmax-1.5 result is a better r2.
 
 ## Plan
 - **Files to change**:

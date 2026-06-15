@@ -1,8 +1,8 @@
 ---
 id: 177-talking-heads
-status: needs-repitch
+status: repitching
 round: 1
-updated: 2026-06-15T01:50:18Z
+updated: 2026-06-15T01:51:28Z
 transfer-risk: med
 plain: Let attention heads talk to each other: each head's pre-softmax scores are mixed through a learned H×H matrix (and similarly post-softmax on the value output), starting at identity so step-0 is byte-identical.
 ---
