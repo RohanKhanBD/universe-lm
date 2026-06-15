@@ -2591,6 +2591,50 @@ class Tiny1M3MAlibiConfig(Tiny1M3MConfig):
 
 
 @dataclass
+class Tiny1M3MVResidualAlibiConfig(Tiny1M3MAlibiConfig):
+    """208 — Value-Residual Learning stacked on the 175-alibi champion
+    (Zhou, Wang, Huang et al. 2024, "Value Residual Learning",
+    arXiv:2410.17897). Subclasses `Tiny1M3MAlibiConfig` so the lever
+    stacks on top of the current champion (val 6.2403, band 0.04).
+
+    Re-uses the already-validated `use_value_residual` flag (021 WIN
+    at tiny1m3m, Δ=−0.034 vs plain; also a WIN on top of FIRE, see
+    `Tiny1M3MVResidualOnFireConfig`). Stash the projected V at layer 0
+    (post-W_V, post-GQA repeat, post-transpose, `[B, n_heads, T, d_k]`);
+    in every later layer l > 0 blend
+        V_l ← (1 − λ_l)·V_l + λ_l·V_1     BEFORE `attn_weights @ V`,
+    with `λ_l = nn.Parameter(torch.zeros(()))` per block on the MHA.
+    `λ_l = 0` at init ⇒ `V_l ← V_l` exactly ⇒ scores/AV/output
+    unchanged ⇒ **byte-identical to the 175-alibi champion at step 0**
+    (max-abs-diff = 0.0). The `.detach()` on the V_1 stash keeps each
+    layer's W_V training on its own attention path — only the blend
+    weight learns the cross-layer shortcut.
+
+    Why this should compound on alibi rather than wash out: the two
+    levers are mechanistically orthogonal. ALiBi (175) is a *score-side*
+    per-head positional bias — it changes *which* key each head attends
+    to. Value-residual is on the *projected V stream* — it changes
+    *which value representation* the attention winners read from. 021
+    fired on the plain baseline and again on top of FIRE (another
+    score-side positional lever), so there is direct in-repo evidence
+    that the V-stream shortcut is additive with a positional score-side
+    win rather than redundant with it.
+
+    A/B vs the current champion `Tiny1M3MAlibiConfig` (val 6.2403,
+    band 0.04). Expected Δval ∈ [−0.02, −0.05] (021 gave −0.034 on the
+    plain baseline; the bet is most of that effect survives the alibi
+    stack since the axes don't overlap). PASS ≤ 6.2403 − 0.01 = 6.2303
+    (alibi-champion − 0.01). NULL band |Δ| < 0.01 (the V-stream shortcut
+    is redundant with alibi at this scale). DRIFT > +0.01. Sub-noise is
+    INCONCLUSIVE on one seed per the one-seed-only rule.
+
+    See `autoresearch/ideas/208-value-residual-alibi/idea.md` and the
+    021 wiring at `models/llm.py:400-401,845,1187,1697`.
+    """
+    use_value_residual: bool = True
+
+
+@dataclass
 class Tiny1M3MLogitScaleConfig(Tiny1M3MAlibiConfig):
     """Tiny1M3M stacked on the 175-alibi champion with a learned global
     logit temperature (idea 184, CLIP-style, Radford et al. 2021,
