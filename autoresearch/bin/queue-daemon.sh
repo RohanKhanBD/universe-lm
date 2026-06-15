@@ -237,7 +237,7 @@ results_init() {
   gpu="$(echo "$probe"  | sed -n '1p' | awk -F', *' '{print $1}')"
   drv="$(echo "$probe"  | sed -n '1p' | awk -F', *' '{print $2}')"
   vram="$(echo "$probe" | sed -n '1p' | awk -F', *' '{print $3}')"
-  cc="$(echo "$probe"   | sed -n '/<<>>/{n;p}')"
+  cc="$(echo "$probe"   | awk '/<<>>/{getline; print}')"
   mkdir -p "$rdir"
   python3 - "$rdir/results.json" "$gpu" "$drv" "$vram" "$cc" "$HOST:$PORT" <<'PY'
 import json, os, sys, datetime
@@ -333,7 +333,7 @@ append_closed_leak() {  # append_closed_leak <idea> <val> <mean>
 append_closed_win() {  # append_closed_win <idea> <val> <delta> <mean> <band>
   local idea="$1" val="$2" delta="$3" mean="$4" band="$5" line marker
   marker='<!-- reviewer/evidence step appends one line per close here -->'
-  line="- $idea — WIN: trt=$val vs baseline $mean±$band (Δ$delta) at tiny1m3m — $(date -u +%F)"
+  line="- $idea — WIN: trt=$val vs baseline ${mean}±${band} (Δ$delta) at tiny1m3m — $(date -u +%F)"
   [ -f "$CLOSED" ] || return 0
   grep -qF -- "$idea — WIN:" "$CLOSED" && return 0
   awk -v m="$marker" -v l="$line" '{print} index($0,m)&&!d{print l; d=1}' "$CLOSED" > "$CLOSED.tmp" \
@@ -390,7 +390,13 @@ PY
 
 flip() {  # respects --dry-run
   if [ "$DRY" = 1 ]; then log "DRY flip $*"; return 0; fi
-  "$FLIP" "$@"
+  # flip.sh prints its "<idea>: <from> -> <to> ... logged" confirmation to STDOUT.
+  # claimable()/sync_and_smoke() return their batch via command substitution, so a
+  # stray flip line on stdout gets swallowed into the batch and parsed as a garbage
+  # "run <idea>: python <to>" job (trailing colon on the slug -> awk can't-open-file
+  # flood in finalize). Force it to stderr like log(), so it stays visible in the
+  # pane but never pollutes the data stream. See the stdout-discipline note above.
+  "$FLIP" "$@" >&2
 }
 
 # ── parse one pulled log's Final readout (deterministic — see RUN-CONTRACT.md) ─
@@ -415,6 +421,10 @@ finalize() {
   local measured_ctrls=0 line tag name
   while IFS= read -r line; do
     tag="${line%% *}"; name="$(echo "$line" | awk '{print $2}')"
+    name="${name%:}"   # belt-and-suspenders: a legit slug never ends in ':'; a
+                       # trailing colon means a stray flip line leaked into the
+                       # batch (now fixed at the flip() wrapper) — strip it so an
+                       # already-written STATUS line can't flood awk with a bad path
     [ -n "$name" ] || continue
     case "$tag" in
       OK)
@@ -464,9 +474,11 @@ finalize_one() {  # finalize_one <idea> <val> <rdir>
   # refresh mean/band from the cache for this box (works for CACHED + post-measure).
   # Defaults above keep `set -u` from tripping if `check` yields fewer fields.
   read -r _tag mean band _key < <("$BASELINE" check "$rdir/results.json" 2>/dev/null || echo "X 0 0 0") || true
-  # Guarantee mean/band are bound + numeric no matter what `read` did — a bash 3.2
-  # process-substitution hiccup once left `mean` effectively unset and `set -u`
-  # killed the whole loop at the verdict print. `:=` pins a default in place.
+  # Guarantee mean/band are bound + numeric no matter what `read` did. `:=` pins a
+  # default in place. NOTE: the verdict/flip strings below MUST brace the vars as
+  # `${mean}±${band}` — an unbraced `$mean±` lets bash fold the leading byte of the
+  # multibyte `±` into the variable name (`mean\xC2`), which set -u then reports as
+  # an unbound var and kills the whole finalize loop at the verdict print.
   : "${mean:=0}" "${band:=0}"
   # ── leak guard (runs BEFORE the verdict) ─────────────────────────────────
   # A val far below the baseline neighborhood is never a win — it's a broken
@@ -487,13 +499,13 @@ finalize_one() {  # finalize_one <idea> <val> <rdir>
   case "$verdict" in
     WIN)
       write_evidence "$idea" WIN "$val" "$delta" "$mean" "$band" "$rdir"
-      flip "$idea" done daemon "WIN: trt=$val vs champion ${CHAMPION_CLASS:-base} $mean±$band (Δ$delta)"
+      flip "$idea" done daemon "WIN: trt=$val vs champion ${CHAMPION_CLASS:-base} ${mean}±${band} (Δ$delta)"
       [ "$DRY" = 1 ] || append_closed_win "$idea" "$val" "$delta" "$mean" "$band"
       promote_champion "$idea" "$val" "$rdir"
       log "$idea — WIN Δ$delta" ;;
     NULL)
       write_evidence "$idea" NULL "$val" "$delta" "$mean" "$band" "$rdir"
-      flip "$idea" done daemon "NULL: trt=$val inside champion ${CHAMPION_CLASS:-base} $mean±$band (Δ$delta)"
+      flip "$idea" done daemon "NULL: trt=$val inside champion ${CHAMPION_CLASS:-base} ${mean}±${band} (Δ$delta)"
       [ "$DRY" = 1 ] || append_closed_null "$idea" "$delta"
       log "$idea — NULL Δ$delta" ;;
     *)
