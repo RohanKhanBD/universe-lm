@@ -9,3 +9,4 @@
 {"ts":"2026-06-15T12:20:34Z","agent":"reviewer","idea":"193-blockwise-attn-temp-schedule","from":"needs-review","to":"reviewing","round":1,"note":"claimed"}
 {"ts":"2026-06-15T12:21:53Z","agent":"reviewer","idea":"193-blockwise-attn-temp-schedule","from":"reviewing","to":"needs-plan","round":1,"note":"verdict: approve"}
 {"ts":"2026-06-15T16:25:50Z","agent":"code-impl","idea":"193-blockwise-attn-temp-schedule","from":"needs-plan","to":"planning","round":1,"note":"claimed"}
+{"ts":"2026-06-15T16:40:18Z","agent":"code-impl","idea":"193-blockwise-attn-temp-schedule","from":"planning","to":"needs-run","round":1,"note":"plan+code done"}

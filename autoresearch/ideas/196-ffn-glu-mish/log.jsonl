@@ -18,3 +18,5 @@
 {"ts":"2026-06-15T16:35:40Z","agent":"auto-implement","idea":"196-ffn-glu-mish","from":"needs-recode","to":"needs-review","round":2,"note":"auto-fix gave up after 3 failed runs — needs a human"}
 {"ts":"2026-06-15T16:36:38Z","agent":"auto-implement","idea":"196-ffn-glu-mish","from":"needs-review","to":"rejected","round":2,"note":"auto-rejected: blocked 3x with no path forward (see log)"}
 {"ts":"2026-06-15T16:38:01Z","agent":"reviewer","idea":"196-ffn-glu-mish","from":"rejected","to":"needs-plan","round":1,"note":"verdict: approve"}
+{"ts":"2026-06-15T16:40:10Z","agent":"code-impl","idea":"196-ffn-glu-mish","from":"needs-plan","to":"planning","round":1,"note":"claimed: plan+code+artifacts verified in HEAD; build-smoke SMOKE_OK"}
+{"ts":"2026-06-15T16:40:13Z","agent":"code-impl","idea":"196-ffn-glu-mish","from":"planning","to":"needs-run","round":1,"note":"plan+code done; build-smoke SMOKE_OK; r2 review's deploy-issue root cause is the daemon's stale-box race — code is in HEAD and constructs on CPU"}
