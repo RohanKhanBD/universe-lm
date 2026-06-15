@@ -1,6 +1,6 @@
 ---
 id: 209-canon-conv-alibi
-status: needs-run
+status: running
 round: 1
 updated: 2026-06-15T18:25:00Z
 transfer-risk: low
