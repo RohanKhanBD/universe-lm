@@ -1,3 +1,36 @@
+## r2 — 2026-06-15 — verdict: accept
+
+**The r2 pitch earned the slot.** All 4 r1 findings closed concretely, and the new framing exposes a sharper bet than I gave credit for in r1.
+
+**Sharp mechanistic sentence (delivered).** "The lever is on the discrete operator change, not on a smooth correction." At α_h>1 the bottom ~70% of K positions receive p=0 exactly, ∂L/∂V_i=0 exactly, and a single bit of α_h movement crosses a discontinuity in ∂L/∂V. This is non-perturbative in a way the 8 prior smooth siblings (152/155/160/162/165/166) genuinely are not. The bit-identical-at-step-0 framing is real (`α_h = 1 + 0.5·(1+tanh(0)) = 1`, the bisection degenerates to the standard softmax projection in the α=1 limit, bisection_tol=1e-7 keeps max-abs-diff < 1e-7 well below the 1e-5 fp32 noise floor). The lever is **isolated to α_h** by construction — no other parameter can absorb the change. Sharp.
+
+**Tight bar (delivered).** Δ ≤ -0.015 WIN OR Δ ≥ +0.05 DRIFT as the bar for "lever binds at this tier"; anything inside the null band is a clean close, not a WIN. With 8 prior family nulls, the prior is genuinely 70% in-band null — the r2 honest Δ prior is right and the bar is tight. This is a *commitment* on the win condition, not a vibe.
+
+**3-family differentiation (delivered).** Concretely separated:
+- Family 1 (operator perturbation): 152/155/160/162/165/166 — smooth, small-Lipschitz, absorbed by Q/K gradient updates.
+- Family 2 (operator replacement, non-attention): 148 — focal modulation replaces the attention block. Different architecture.
+- Family 3 (capacity injection): 156/117/118/146 — MoE/router/expert levers that *add* parameters.
+
+Entmax-1.5 is **none of these three**: bit-identical at step 0 AND non-perturbative as α_h moves. The lever is isolated to one axis. A null from a non-smooth, isolated test is a *stronger* null than 8 prior smooth siblings — if a non-perturbative operator change can't bind at this tier, the soft-perturbation nulls are independently confirmed. WIN unlocks Phase-2 family. DRIFT saves a Phase-2 slot. All three outcomes informative.
+
+**Field veto reframed (delivered).** 6+ years of softmax dominance in production LMs is a real soft negative. The r2 pitch correctly identifies that the close-line will read exactly "softmax-replacement axis closed at 0.94M" — and that is a known outcome worth logging with a stronger test, not a reason to skip the test. Agreed.
+
+**Milder variant deferral (acceptable).** The r1 reviewer floated entmax-1.2 as a "small dose" play. The r2 defers to a follow-up if r2 entmax-1.5 nulls. Reasonable: splitting the slot into 1.5+1.2 doubles run budget and dilutes signal. Clean r2 first, follow-up is cheap.
+
+**Why this clears the taste bar.**
+
+- *Leverage*: Δ bar of -0.015 matches the 154-rebased-attn WIN family (Δ=-3.48 against a buggy ctrl but the plan bar was tighter), and the r2 honest prior says 20% mild WIN / 10% strong WIN-or-DRIFT / 70% null. Modest expected magnitude but a real lever.
+- *Information value*: high — three informative outcomes, all of which log something useful about the softmax-replacement axis.
+- *Non-obviousness*: the per-head-learnable α_h as a *single-axis, non-perturbative, bit-identical-at-step-0 lever* is a fresh framing for a well-known mechanism. Distinct from the closed "NSA/diff-attn/hybrid heads" axis (diff-attn is smooth post-QK, Family 1).
+- *Portfolio fit*: yes, 9 prior family nulls are crowded. But r2 is structurally different from each of the 9 (only non-perturbative operator replacement in the family), not the 10th smooth perturbation.
+- *Niche fit*: mechanism (not HP), identity/zero-init-able, tiny1m3m-showable. ✓
+- *Crisp bet*: "Δ ≤ -0.015 OR Δ ≥ +0.05 as the bar for lever-binding; otherwise clean null." Single sentence, falsifiable.
+- *Transfer*: med-risk tag, with the null outcome pointed at Phase-2 re-evaluation. Mechanism is scale-free. Acknowledged.
+
+**Engineering**: sound. LoC ~80, bisection budget 32 is realistic, the tanh parameterization is correct, the YOCO/standard-MHA pass-through is straightforward, the closed-axis / step-0-byte-identical claims are documented. The `entmax_15` helper follows Peters et al.'s well-known recipe and is implementable from the `entmax` PyPI reference. No concerns.
+
+**Resetting round to 1 for the definition gate's budget.**
+
 ## r1 — 2026-06-15 — verdict: revise
 
 **Leverage is soft.** Paper gain is modest (+0.5 BLEU on WMT'14, +0.5–1.0 GLUE on BERT-base at ≥100M) and the miner's own predicted band Δval ∈ [-0.005, -0.020] has the lower end sitting inside the |Δ|<0.01 null band — 60% of the expected range is null. Not a high-leverage lever at our tier.
