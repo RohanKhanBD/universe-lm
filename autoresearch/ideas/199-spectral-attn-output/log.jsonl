@@ -18,3 +18,4 @@
 {"ts":"2026-06-15T16:56:08Z","agent":"daemon","idea":"199-spectral-attn-output","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
 {"ts":"2026-06-15T16:56:30Z","agent":"daemon","idea":"199-spectral-attn-output","from":"running","to":"needs-recode","round":1,"note":"build-smoke failed: no smoke output (scp/connection failed)"}
 {"ts":"2026-06-16T00:33:19Z","agent":"implement-button","idea":"199-spectral-attn-output","from":"needs-recode","to":"implementing","round":1,"note":"claimed by implement button"}
+{"ts":"2026-06-16T00:34:15Z","agent":"code-impl","idea":"199-spectral-attn-output","from":"implementing","to":"recoding","round":1,"note":"claimed: recheck after transient scp/connection build-smoke failure; code path verified correct in working tree (spectral cap branch in MHA.forward, Tiny1M3MWOSpectralCapConfig subclass present, llm.py pass-through present, _arq stub + run.json present)"}
