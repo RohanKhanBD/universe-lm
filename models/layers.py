@@ -3466,6 +3466,15 @@ class MultiHeadAttention(nn.Module):
         if use_poly_alibi:
             self.poly_alibi_m = nn.Parameter(torch.zeros(self.n_heads))
             self.poly_alibi_c = nn.Parameter(torch.zeros(self.n_heads))
+        # 231 Kerple log-distance ALiBi: scores -= m_h·log(1 + r_h·d), d=(i-j)≥0
+        # (Chi et al. 2022, arXiv:2205.09921). A CONCAVE distance kernel (gentler
+        # far-token penalty than linear alibi / convex 230). m_h init 0 ⇒ bias 0
+        # ⇒ step-0 == baseline/alibi; r_h = softplus(raw), raw init 0 ⇒ r≈0.693.
+        # m_h is high-leverage and grows fast like alibi's slope (the win property).
+        self.use_kerple_log = use_kerple_log
+        if use_kerple_log:
+            self.kerple_m = nn.Parameter(torch.zeros(self.n_heads))
+            self.kerple_r_raw = nn.Parameter(torch.zeros(self.n_heads))
         # Q2 Token-conditioned per-head temperature. Q *= (1 + tanh(x·w_h)).
         # w_h init 0 → tanh(0) = 0 → step-0 == baseline.
         self.use_q_temp_token = use_q_temp_token
@@ -5394,6 +5403,16 @@ class MultiHeadAttention(nn.Module):
                 m = self.poly_alibi_m.view(1, self.n_heads, 1, 1)
                 c = self.poly_alibi_c.view(1, self.n_heads, 1, 1)
                 scores = scores - (m * diff + c * diff * diff / float(seq_len))
+            # ---- 231 Kerple log: scores -= m_h·log(1 + r_h·d), d=(i-j)≥0 ----
+            # Concave distance kernel. dist = (i-j).clamp(min=0): causal cells get
+            # the true distance, future cells get 0 ⇒ log(1)=0 (and are masked
+            # anyway). r_h = softplus(kerple_r_raw) keeps the inner scale > 0.
+            if self.use_kerple_log:
+                dist = (ar[:, None].float() - ar[None, :].float()).clamp(min=0.0)
+                dist = dist.view(1, 1, seq_len, seq_len)
+                m = self.kerple_m.view(1, self.n_heads, 1, 1)
+                r = F.softplus(self.kerple_r_raw).view(1, self.n_heads, 1, 1)
+                scores = scores - m * torch.log1p(r * dist)
             # ---- Q10 Antisymmetric Q·K coupling: +Q^T S K, S skew ----
             if self.use_antisym_qk:
                 # Enforce skew: S = (raw - raw.T) / 2.
