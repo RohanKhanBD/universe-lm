@@ -15,3 +15,4 @@
 {"ts":"2026-06-15T16:47:58Z","agent":"code-impl","idea":"194-lowrank-ffn","from":"needs-plan","to":"planning","round":1,"note":"claimed: previous worker exit was uncommitted; re-claimed by plan agent"}
 {"ts":"2026-06-15T16:55:42Z","agent":"orchestrator","idea":"194-lowrank-ffn","from":"planning","to":"needs-plan","round":1,"note":"reclaim stale planning lock (7m)"}
 {"ts":"2026-06-16T00:44:05Z","agent":"code-impl","idea":"194-lowrank-ffn","from":"needs-plan","to":"needs-run","round":1,"note":"plan+code done"}
+{"ts":"2026-06-16T00:44:55Z","agent":"daemon","idea":"194-lowrank-ffn","from":"needs-run","to":"running","round":1,"note":"claimed: queued by daemon"}
