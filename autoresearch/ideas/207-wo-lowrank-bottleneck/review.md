@@ -1,5 +1,17 @@
 # Review log — 207 W_O Low-Rank Bottleneck
 
+## r2 — 2026-06-16 — verdict: approve
+
+**Why this re-routes to `needs-plan` (not `revise`):**
+- **Idea/plan soundness unchanged from r1.** r1 already cleared the definition gate — all 4 findings (bit-identical is approximate not literal, r=16 hard-coded absolute, scale-evidence caveat, α init justification) were addressed in the plan. Nothing in the prior log warrants re-litigating them.
+- **The bounce-back was infrastructure, not definition.** `auto-implement` flipped `needs-recode → needs-review` after 3 build-smoke failures on the box. The local copy of `configs/llm_config.py` *does* define `Tiny1M3MLowRankWOConfig` (line 8780), and `models/layers.py` *does* implement the flag (`use_lowrank_wo`, `wo_a`, `wo_b`, `wo_lowrank_alpha` registrations at 2370-2387; forward site present). The box-side `ImportError` at 00:39:26Z is a sync-race against the daemon's auto-sync at 00:39:05Z (commits 401f996, 3743ef5) — the box picked up `models/layers.py` but not `configs/llm_config.py` in time.
+- **Routing choice.** `revise` → `needs-revision` would put this on the reviser (who edits `idea.md`), and the issue is not in `idea.md` — the lever spec is correct. `approve` → `needs-plan` puts it back on the code-implementer with a fresh budget; the next sync (already complete in local tree: 858025e at 00:41:03Z) should let the box import the class cleanly. This is the definition-gate reset path the protocol documents for "code gate gave up, give it another shot."
+- **One nit for the code-implementer (not a blocker).** If the build-smoke fails again with the same ImportError, check whether the box-side `configs/llm_config.py` is on a stale SHA — `git -C /root/universe-lm rev-parse HEAD` should match local `git rev-parse HEAD`. The two prior daemon sync commits (401f996/3743ef5) brought `models/` and `optimizers/`; a sync that doesn't include `configs/` would explain the partial-pickup symptom.
+
+**Routing:** `approve` → `needs-plan`, round reset to 1 (code gate gets a fresh budget; definition gate still cleared at r1).
+
+---
+
 ## r1 — 2026-06-15 — verdict: approve
 
 **Why it clears the definition gate:**

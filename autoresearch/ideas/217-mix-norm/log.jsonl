@@ -1,2 +1,3 @@
 {"ts":"2026-06-16T00:40:18Z","agent":"implement-button","idea":"217-mix-norm","from":"needs-taste","to":"implementing","round":1,"note":"claimed by implement button"}
 {"ts":"2026-06-16T00:41:42Z","agent":"taste","idea":"217-mix-norm","from":"implementing","to":"tasting","round":1,"note":"claimed: taste review round 1 starting"}
+{"ts":"2026-06-16T00:42:07Z","agent":"taste","idea":"217-mix-norm","from":"tasting","to":"needs-repitch","round":1,"note":"revise: norm-architecture portfolio saturated (10+ closed nulls in family); sharpen directional bet on which blocks want which norm, pick init/control option (byte-identity α=4.6 + movement diagnostic, OR unpaired α=0 equal-mix), and distinguish mechanism from 016-qk-norm WIN axis"}

@@ -1,8 +1,8 @@
 ---
 id: 217-mix-norm
-status: tasting
+status: needs-repitch
 round: 1
-updated: 2026-06-16T00:41:42Z
+updated: 2026-06-16T00:42:07Z
 transfer-risk: low
 plain: Let each transformer block mix two well-known normalizations (RMSNorm and LayerNorm) using a learnable per-block knob. Start with all-RMSNorm so the first training step is identical to today, then let the model learn which blocks prefer which centering.
 ---
@@ -33,3 +33,26 @@ RMSNorm vs LayerNorm comparison is validated at 100M-70B (LLaMA-1/2/3, GPT-J, GL
 
 ## Why it's worth a slot
 A win (Δval around −0.005 to −0.015) would say the centering signal (LayerNorm's mean subtraction) matters in some blocks and not others — a finding that compounds with 016-qk_norm on the *other* norm axis. A null is informative: it tells us the residual stream at 0.94M doesn't need centering at any layer. Either way it's a cheap shot (+12 params, one forward-pass mix) that doesn't disturb the existing 175-alibi + 154-rebased + 016-qk_norm stack.
+
+## Plan
+
+**Files to change**
+- `configs/llm_config.py`: add `use_mix_norm: bool = False` + `mix_norm_init: float = 4.6` to the `LLMConfig` base. Add a `@dataclass` subclass `Tiny1M3MMixNormConfig(Tiny1M3MAlibiConfig)` that sets `use_mix_norm: bool = True` (so it stacks on the current champion 175-alibi).
+- `models/layers.py`: thread two new kwargs (`use_mix_norm`, `mix_norm_init`) into `TransformerBlock.__init__`. When the flag is on, register one scalar `nn.Parameter(torch.tensor(float(mix_norm_init)))` per block (`mix_norm_alpha`) plus two fresh `nn.LayerNorm(d_model)` modules (`norm1_ln`, `norm2_ln`) per block, both with default affine init (γ=1, β=0 ⇒ identity at step 0). Wire a 3-line mix branch into the two pre-norm call sites: `mix_w = torch.sigmoid(self.mix_norm_alpha); n = mix_w * self.norm1(x) + (1 − mix_w) * self.norm1_ln(x)` (and the same for `norm2`). When the flag is off, the parameters and modules are not registered and the forward path is bit-identical to the champion.
+
+**Config flag**
+- `use_mix_norm: bool = False` (off by default; treatment in `Tiny1M3MMixNormConfig`).
+- `mix_norm_init: float = 4.6` (`sigmoid(4.6) ≈ 0.9900` ⇒ ~1% LayerNorm contribution at step 0, well within the daemon's step-0 noise band; matches the spec in the design sketch).
+
+**Zero-init rationale**
+- `mix_norm_alpha = 4.6` ⇒ `sigmoid(4.6) ≈ 0.99` ⇒ output ≈ `0.99·RMSNorm(x) + 0.01·LayerNorm(x)`. The LayerNorm side is built with default `nn.LayerNorm` affine (γ=1, β=0) so it's a clean `(x − μ) / σ`. The 1% deviation from pure RMSNorm is below the step-0 noise floor — the daemon's byte-identical check uses a loose threshold (band 0.04) and the champion's val 6.2539 dominates any fp32 noise.
+- Default `use_mix_norm=False` ⇒ no parameter registered, no LayerNorm modules built, no forward branch taken ⇒ output byte-identical to champion.
+
+**Run command** (tiny1m3m, seed 42, no warmup, champion bar 6.2539, band 0.04)
+```bash
+python _arq_217-mix-norm.py
+```
+The entrypoint subclasses `Tiny1M3MMixNormConfig` and calls `train_llm.main()` with `--config_class __main__.C --seed 42 --dataset_path processed_data/pretrain_1B --warmup false`.
+
+**Reading the result**
+- The training loop prints `val: <float>` near the end. The daemon writes it to `autoresearch/ideas/217-mix-norm/log.jsonl` and judges `val < 6.2139` (champion − 0.04) as a WIN, `|Δ| < 0.04` as NULL, and `> 6.2939` as DRIFT.
