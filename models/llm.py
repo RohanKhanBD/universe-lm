@@ -679,6 +679,19 @@ class MinimalLLM(nn.Module):
         self.pre_ffn_attn_mix_init = float(
             getattr(config, "pre_ffn_attn_mix_init", -10.0)
         )
+        # 217 — Per-Block RMSNorm/LayerNorm Mixture. Default off →
+        # no Parameter registered per block, no `nn.LayerNorm`
+        # modules built, no forward branch taken, baseline path
+        # bit-identical. See
+        # `autoresearch/ideas/217-mix-norm/idea.md` and
+        # `models/layers.py` for the per-block `mix_norm_alpha`
+        # parameter and the pre-norm splice sites.
+        self.use_mix_norm = getattr(
+            config, "use_mix_norm", False
+        )
+        self.mix_norm_init = float(
+            getattr(config, "mix_norm_init", 4.6)
+        )
         # 118 — Mixture-of-Depths (Raposo et al. 2024, arXiv:2404.02258):
         # when on, each block builds a per-token `MoDRouter` and gates
         # the block's residual update to the top-k = `mod_capacity · T`
@@ -860,6 +873,7 @@ class MinimalLLM(nn.Module):
         # Query-tweaks: 29 new flags (see docs/research-plans/query-tweaks/plan.md).
         self.q_norm_type = getattr(config, "q_norm_type", self.qk_norm_type)
         self.use_alibi_bias = getattr(config, "use_alibi_bias", False)
+        self.use_poly_alibi = getattr(config, "use_poly_alibi", False)
         self.use_q_temp_token = getattr(config, "use_q_temp_token", False)
         self.use_cosine_attn = getattr(config, "use_cosine_attn", False)
         self.use_qk_bilinear = getattr(config, "use_qk_bilinear", False)
@@ -1254,6 +1268,12 @@ class MinimalLLM(nn.Module):
                         # `autoresearch/ideas/198-pre-ffn-attnmix/idea.md`.
                         use_pre_ffn_attn_mix=self.use_pre_ffn_attn_mix,
                         pre_ffn_attn_mix_init=self.pre_ffn_attn_mix_init,
+                        # 217 — Per-Block MixNorm pass-through to
+                        # the YOCO upper-half block. Default off →
+                        # baseline path bit-identical. See
+                        # `autoresearch/ideas/217-mix-norm/idea.md`.
+                        use_mix_norm=self.use_mix_norm,
+                        mix_norm_init=self.mix_norm_init,
                         use_mod=self.use_mod,
                         mod_capacity=self.mod_capacity,
                         mod_router_hidden=self.mod_router_hidden,
@@ -1308,6 +1328,7 @@ class MinimalLLM(nn.Module):
                         tied_wo_shared=self.tied_wo_shared,
                         q_norm_type=self.q_norm_type,
                         use_alibi_bias=self.use_alibi_bias,
+                        use_poly_alibi=self.use_poly_alibi,
                         use_q_temp_token=self.use_q_temp_token,
                         use_cosine_attn=self.use_cosine_attn,
                         use_qk_bilinear=self.use_qk_bilinear,
@@ -1733,6 +1754,12 @@ class MinimalLLM(nn.Module):
                         # `autoresearch/ideas/198-pre-ffn-attnmix/idea.md`.
                         use_pre_ffn_attn_mix=self.use_pre_ffn_attn_mix,
                         pre_ffn_attn_mix_init=self.pre_ffn_attn_mix_init,
+                        # 217 — Per-Block MixNorm pass-through to
+                        # the standard block. Default off → baseline
+                        # path bit-identical. See
+                        # `autoresearch/ideas/217-mix-norm/idea.md`.
+                        use_mix_norm=self.use_mix_norm,
+                        mix_norm_init=self.mix_norm_init,
                         # 118 — Mixture-of-Depths pass-through to the block.
                         use_mod=self.use_mod,
                         mod_capacity=self.mod_capacity,
@@ -1801,6 +1828,7 @@ class MinimalLLM(nn.Module):
                         tied_wo_shared=self.tied_wo_shared,
                         q_norm_type=self.q_norm_type,
                         use_alibi_bias=self.use_alibi_bias,
+                        use_poly_alibi=self.use_poly_alibi,
                         use_q_temp_token=self.use_q_temp_token,
                         use_cosine_attn=self.use_cosine_attn,
                         use_qk_bilinear=self.use_qk_bilinear,

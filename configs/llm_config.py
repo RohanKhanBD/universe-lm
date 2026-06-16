@@ -1789,6 +1789,10 @@ class LLMConfig:
     # ---- Batch 1: high-signal levers ----
     # Q1 ALiBi-style per-head distance bias `scores += -m_h·(i-j)`.
     use_alibi_bias: bool = False
+    # 230 Polynomial-distance ALiBi `scores -= (m_h·d + c_h·d²/L)` — a
+    # per-head superset of Q1 (c_h=0 recovers linear alibi). See
+    # Tiny1M3MPolyAlibiConfig and models/layers.py poly-alibi branch.
+    use_poly_alibi: bool = False
     # Q2 Token-conditioned per-head temperature `Q *= (1+tanh(x·w_h))`.
     use_q_temp_token: bool = False
     # Q3 Cosine attention (L2-normalize Q,K; learnable per-head τ).
@@ -3348,6 +3352,43 @@ class Tiny1M3MAlibiConfig(Tiny1M3MConfig):
     mechanism, lever-mode pin, and zero-init rationale.
     """
     use_alibi_bias: bool = True
+
+
+@dataclass
+class Tiny1M3MPolyAlibiConfig(Tiny1M3MAlibiConfig):
+    """230 — Polynomial-distance ALiBi: a per-head SUPERSET of the
+    175-alibi champion. Replaces the linear distance bias with
+    `scores -= (m_h·d + c_h·d²/L)`, `d = (i−j)`, `L = max_seq_len`.
+
+    Subclasses `Tiny1M3MAlibiConfig` but turns OFF the linear-only
+    `use_alibi_bias` branch (the poly branch carries its own `m_h`
+    so the linear term isn't double-counted) and turns ON
+    `use_poly_alibi`. Both `m_h` and `c_h` are
+    `nn.Parameter(torch.zeros(n_heads))` ⇒ bias = 0 at init ⇒
+    **byte-identical to the alibi champion at step 0** (and to the
+    base). With `c_h = 0` the mechanism reproduces the champion
+    exactly, so the WIN bar is structurally reachable — unlike the
+    orthogonal bolt-ons (208–216) that washed inside the band.
+
+    Why it can move in 92 steps where zero-init *matrix* levers
+    (211-SwiGLU) wash out: only +12 params (one extra scalar/head),
+    and the quadratic gradient ∝ d²/L is high-leverage for far
+    tokens, so `c_h` grows fast — the same property that let alibi's
+    48-param slope win (+0.18 over base). The curvature lets each
+    head learn a non-linear distance decay (convex = sharper far
+    penalty, concave = gentler) that pure-linear alibi cannot.
+
+    Distinct from 228-per-layer-alibi-mul (a per-block *scalar
+    multiplier* on the existing linear slope — magnitude only, still
+    linear) and from 166-t5-rpe (bucketed-discrete, NULL). This is a
+    *continuous* curvature on the same position-distance axis 175 won
+    on. A/B vs the champion `Tiny1M3MAlibiConfig` (val 6.2539, band
+    0.04). PASS/WIN: val < 6.2003. NULL band |Δ| < 0.04.
+
+    See `autoresearch/ideas/230-poly-alibi/idea.md`.
+    """
+    use_alibi_bias: bool = False
+    use_poly_alibi: bool = True
 
 
 @dataclass

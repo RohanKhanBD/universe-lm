@@ -1334,6 +1334,7 @@ class MultiHeadAttention(nn.Module):
         # Query-tweaks (29 experiments, 6 batches — see plan.md).
         q_norm_type: str = "rmsnorm",
         use_alibi_bias: bool = False,
+        use_poly_alibi: bool = False,
         use_q_temp_token: bool = False,
         use_cosine_attn: bool = False,
         use_qk_bilinear: bool = False,
@@ -3456,6 +3457,15 @@ class MultiHeadAttention(nn.Module):
         self.use_alibi_bias = use_alibi_bias
         if use_alibi_bias:
             self.alibi_slope = nn.Parameter(torch.zeros(self.n_heads))
+        # 230 Polynomial-distance ALiBi: scores -= (m_h·d + c_h·d²/L), d=(i-j).
+        # Strict superset of Q1 ALiBi (c_h=0 ⇒ the linear champion exactly).
+        # m_h, c_h both init 0 ⇒ bias 0 ⇒ step-0 == baseline/alibi. The
+        # quadratic gradient ∝ d²/L is high-leverage for far tokens, so c_h
+        # grows fast in 92 steps (the same property that let alibi's slope win).
+        self.use_poly_alibi = use_poly_alibi
+        if use_poly_alibi:
+            self.poly_alibi_m = nn.Parameter(torch.zeros(self.n_heads))
+            self.poly_alibi_c = nn.Parameter(torch.zeros(self.n_heads))
         # Q2 Token-conditioned per-head temperature. Q *= (1 + tanh(x·w_h)).
         # w_h init 0 → tanh(0) = 0 → step-0 == baseline.
         self.use_q_temp_token = use_q_temp_token
@@ -5216,7 +5226,7 @@ class MultiHeadAttention(nn.Module):
             attn_w = F.dropout(attn_w, p=self.dropout if self.training else 0.0)
             attn_output = torch.matmul(attn_w, V)
         elif (
-            self.use_alibi_bias or self.use_cosine_attn
+            self.use_alibi_bias or self.use_poly_alibi or self.use_cosine_attn
             or self.use_qk_bilinear or self.use_talking_heads_q
             or self.use_decoupled_content_pos or self.use_antisym_qk
             or self.use_q_feature_map or self.use_per_head_rope_base
@@ -5373,6 +5383,17 @@ class MultiHeadAttention(nn.Module):
                 diff = ar[None, :].float() - ar[:, None].float()  # [T, T]
                 m = self.alibi_slope.view(1, self.n_heads, 1, 1)
                 scores = scores - m * diff.view(1, 1, seq_len, seq_len)
+            # ---- 230 poly-alibi: scores -= (m_h·d + c_h·d²/L) ----
+            # Superset of Q1: same `diff` convention so c_h=0 reproduces alibi;
+            # the d²/L term (L=seq_len, same scale as the linear term) adds
+            # per-head curvature. Future positions are killed by the causal
+            # mask added later, exactly like the Q1 ALiBi branch.
+            if self.use_poly_alibi:
+                diff = ar[None, :].float() - ar[:, None].float()  # [T, T]
+                diff = diff.view(1, 1, seq_len, seq_len)
+                m = self.poly_alibi_m.view(1, self.n_heads, 1, 1)
+                c = self.poly_alibi_c.view(1, self.n_heads, 1, 1)
+                scores = scores - (m * diff + c * diff * diff / float(seq_len))
             # ---- Q10 Antisymmetric Q·K coupling: +Q^T S K, S skew ----
             if self.use_antisym_qk:
                 # Enforce skew: S = (raw - raw.T) / 2.
@@ -6628,6 +6649,7 @@ class TransformerBlock(nn.Module):
         # Query-tweaks (29 experiments). Pass-through to MHA.
         q_norm_type: str = "rmsnorm",
         use_alibi_bias: bool = False,
+        use_poly_alibi: bool = False,
         use_q_temp_token: bool = False,
         use_cosine_attn: bool = False,
         use_qk_bilinear: bool = False,
@@ -7316,6 +7338,7 @@ class TransformerBlock(nn.Module):
             # Query-tweaks pass-through.
             q_norm_type=q_norm_type,
             use_alibi_bias=use_alibi_bias,
+            use_poly_alibi=use_poly_alibi,
             use_q_temp_token=use_q_temp_token,
             use_cosine_attn=use_cosine_attn,
             use_qk_bilinear=use_qk_bilinear,
