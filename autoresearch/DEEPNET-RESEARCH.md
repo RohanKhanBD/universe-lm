@@ -95,6 +95,31 @@ training, baseline vs deepnet. Wang Thm 1 predicts deepnet **flattens the per-la
 update-magnitude profile** (bounded update). Confirming that profile change *is* the
 mechanistic explanation, independent of the loss number.
 
+**E5 result — step-0 residual-stream probe (`autoresearch/bin/deepnet_probe.py`, 2026-06-17).**
+Fixed width (d=128), depth varied, random batch, no training. Per-block residual RMS
+growth (last/first):
+
+| L | α=(2L)^(−1/2) | baseline growth | deepnet growth |
+|---|---|---|---|
+| 4  | 0.354 | 1.03× | 1.00× |
+| 8  | 0.250 | 1.08× | 1.01× |
+| 16 | 0.177 | 1.16× | 1.01× |
+| 30 (target) | 0.129 | **1.31×** | **1.01×** |
+
+Three reads, including an honest one that reshapes the bet:
+1. **Mechanism confirmed.** DeepNet-α holds the residual stream flat (~1.01×) at every
+   depth — the bounded-O(1) regime Wang Thm 1 predicts.
+2. **Depth-dependent (supports H1 direction).** Baseline growth *rises* with depth
+   (1.03×→1.31×), so the thing deepnet fixes gets bigger as the stack deepens.
+3. **…but mild, which tempers H1 toward H2.** Baseline grows only 1.31× at L=30 —
+   nowhere near the loose √L≈5.5× — because **pre-norm + RMSNorm already tames residual
+   growth**. So at our depths (≤30) the magnitude deepnet corrects is small; expect a
+   correspondingly small loss benefit unless the *update*-side (β, idea 288) or training
+   dynamics matter more than the step-0 forward magnitude. **The ladder loss-delta (E1)
+   is the arbiter.** Caveat: this probe measures the forward magnitude only; the β
+   init-downscale targets the gradient/update bound, which this does not capture — a
+   reason E3 (α vs α+β) could still move even though α's forward effect looks small.
+
 ## Decision rule
 
 DeepNet earns a 135M slot **iff** its fitted curve sits below baseline at the target N
