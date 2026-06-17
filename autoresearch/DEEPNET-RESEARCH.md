@@ -83,11 +83,15 @@ Test `deepnet` (α only) vs `deepnet_ab` (α + canonical β init) at rungs 1–2
 DeepNet pairs them; we only carry α. Does the init-side β stack, or is α sufficient?
 
 ### E4 — Specificity: is it DeepNet, or any residual damping?
-Compare at the cheapest rung (8M): `deepnet` (fixed (2L)^(−1/2)) vs **ReZero**
-(`use_re_zero`, learned per-block α init 0) vs **LayerScale** (per-channel γ init 1e-4)
-vs a **fixed non-DeepNet constant** (e.g. α=0.5). If a plain constant matches DeepNet's
-depth formula, the win is "damp the residual at init," not DeepNet's specific
-`(2L)^(−1/2)` — a simpler, equally-good lever and a cleaner story.
+Compare at the cheapest rung (8M): `deepnet` (fixed scalar (2L)^(−1/2)) vs **ReZero**
+(`rezero` → `use_re_zero`, learned **scalar** α init 0) vs **LayerScale** (`layerscale`
+→ **`use_layer_scale`**, canonical learned **per-channel** γ init 1e-4, Touvron 2021 —
+NOT the `use_layerscale` (1+γ) variant). If ReZero/LayerScale match DeepNet, the win is
+generic "damp/balance the residual," not DeepNet's specific depth formula. **Reframe
+after the E5 gradient probe:** the likely outcome is that *all* of this family lands
+≈baseline — because the per-layer balancing they provide is already supplied by **Muon**
+(see E5 finding 3). E4 then becomes a confirmation that the residual-damping family is
+**redundant with our optimizer** at ≤30 layers, not a hunt for the best damper.
 
 ### E5 — Understanding (instrumentation, the "why")
 Log **per-layer residual-stream RMS** and **per-layer gradient norms** at init and over
@@ -162,6 +166,8 @@ small win to keep, but **not** the scaling lever the release needs — keep sear
 4. **E5** instrumentation on one baseline/deepnet pair (no extra training — hook the
    existing run).
 
-Arms are wired in `autoresearch/bin/run_rung.py` (`deepnet`, `deepnet_ab`, `rezero`,
-`layerscale`, `fixedres`). All are D002-safe (non-positional). Results land in
-`autoresearch/ladder/results.jsonl`; `arch` distinguishes the arm.
+Arms wired in `autoresearch/bin/run_rung.py`: `baseline`, `deepnet`, `deepnet_ab` (E3),
+`rezero` + `layerscale` (E4). All D002-safe (non-positional). E6 (deepnet under AdamW vs
+Muon) needs the 2-D optimizer slot swapped off Muon — feasible via `setup_muon_optimizer`
+but not yet wired as an arm. Results land in `autoresearch/ladder/results.jsonl`; `arch`
+distinguishes the arm. The `deepnet_probe.py` E5 results need no GPU and are already in.

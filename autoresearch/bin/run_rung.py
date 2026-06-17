@@ -52,7 +52,8 @@ ARM_FLAGS = {
     "deepnet":  {"use_deepnet_alpha": True},     # DeepNet-a residual init (non-positional, long-context-safe)
     # DeepNet ablations — see autoresearch/DEEPNET-RESEARCH.md. All D002-safe (non-positional):
     "deepnet_ab": {"use_deepnet_alpha": True, "use_deepnet_beta_init": True},  # E3: + canonical beta init downscale ((8L)^-1/4)
-    "rezero":     {"use_re_zero": True},                                       # E4: specificity control — learned per-block alpha, init 0
+    "rezero":     {"use_re_zero": True},                                       # E4: specificity ctrl — learned SCALAR alpha, init 0
+    "layerscale": {"use_layer_scale": True},                                   # E4: specificity ctrl — canonical LayerScale, learned per-CHANNEL gamma init 1e-4 (Touvron 2021; NOT the use_layerscale (1+g) variant)
     # Long-context-safe candidates (flags already wired) — uncomment to enable as arms:
     # "ropebase":  {"rope_base": 100_000.0},
     # "qknorm":    {"use_qk_norm_post_rope": True},
