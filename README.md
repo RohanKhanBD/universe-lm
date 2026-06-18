@@ -24,15 +24,24 @@ each, `seed=42`), and report the within-box Δ back via an issue or
 [Discord](https://discord.gg/6AbXGpKTwN). Every datapoint helps us find the
 recipe that scales to a 135M model beating SmolLM2-135M.
 
-Open the branch — its README has the exact commands and a copy-paste prompt for
-your AI coding agent.
-
 | Experiment | What it tests | Smallest run | Branch |
 |---|---|---|---|
-| **Attention Residuals (AttnRes)** | Replace the fixed inter-layer residual with softmax attention over depth ([arXiv:2603.15031](https://arxiv.org/abs/2603.15031)). A depth lever — should help more as layers grow. | ~1 hr (8M rung) | [`experiment/attn-res-v1`](https://github.com/vukrosic/universe-lm/tree/experiment/attn-res-v1) |
+| **Attention Residuals (AttnRes)** | Replace the fixed inter-layer residual with softmax attention over depth ([arXiv:2603.15031](https://arxiv.org/abs/2603.15031)). A depth lever — should help more as layers grow. | ~1 hr · 8M params (8 layers) | [`experiment/attn-res-v1`](https://github.com/vukrosic/universe-lm/tree/experiment/attn-res-v1) |
+
+**To run one:** check out its branch — the branch README has the exact two
+commands (control + treatment) and a copy-paste prompt you can hand to your AI
+coding agent. e.g. for AttnRes:
+
+```bash
+git clone -b experiment/attn-res-v1 https://github.com/vukrosic/universe-lm.git
+cd universe-lm   # now read this branch's README, top section
+```
 
 *Want to add your own? Branch from `main`, wire the idea behind a config flag,
 add a branch README with the run commands, and open a PR adding a row here.*
+
+*A backlog of possibly-future ideas (unvetted, may not help) sits at the
+[bottom of this README](#-idea-backlog-possibly-future-ideas).*
 
 ## 🏁 The Speedrun
 
@@ -129,3 +138,50 @@ Default is an **88M parameter** transformer LLM, you can modify configs.
 - **Weight Tying**: Shared weights between token embeddings and the LM head.
 - **Muon Support**: Architecture optimized for the Muon optimizer's orthogonal updates.
 - **Efficiency**: Designed for `torch.compile` compatibility and mixed-precision (BF16) training.
+
+---
+
+## 💡 Idea backlog (possibly future ideas)
+
+Parking lot of unvetted ideas — **not on the roadmap, may not help at all**.
+Nothing here is claimed to work; it's just a list to pull from when picking the
+next experiment. To try one: wire it behind a config flag, branch it, and it
+graduates to [Experiments You Can Run](#-experiments-you-can-run-donate-gpu-time).
+Two groups: **(A)** new architectures / mechanisms (higher ceiling, more likely to
+move loss, more work); **(B)** recipe & hyperparameter levers (cheaper, lower ceiling).
+
+#### A. New architectures & mechanisms (higher ceiling)
+
+These change *what the model computes* and have real pretraining results behind them.
+
+| Idea | What it might do | Source |
+|---|---|---|
+| **LayerNorm Scaling (Curse of Depth)** | Scale each LN output by `1/√depth`. Pre-LN's output variance grows exponentially with depth → deep layers become near-useless (pruning the back half barely hurts). LNS makes deeper layers contribute. Lowest PPL across 130M–7B; **directly complements our depth lever + 30-layer target**. | [2502.05795](https://arxiv.org/abs/2502.05795) |
+| **Parallax (local-linear attention)** | Keep softmax, add a learned branch probing the KV covariance (local-*linear* upgrade to softmax's local-*constant* estimate). Beats softmax at 0.6B/1.7B, **param- & compute-matched** — and **Muon unlocks it** (our exact optimizer). | [2605.29157](https://arxiv.org/abs/2605.29157) |
+| **MUDD — multiway dynamic dense connections** | Per-token, input-dependent dense skips into BOTH the residual stream and attention values. Sibling to our AttnRes work; live in the current nanogpt record (#81). | [2502.12170](https://arxiv.org/abs/2502.12170) |
+| **Looped / recurrent-depth LM** | Reuse a weight-shared block N times (depth without params); sharply improves multi-hop/composition, adds adaptive compute via entropy-regularized exit. Param-efficiency is our constraint; distinct from plain layer-tying. | [LoopLM 2510.25741](https://arxiv.org/abs/2510.25741) · [Huginn 2502.05171](https://arxiv.org/abs/2502.05171) |
+| **Multi-Token Prediction (MTP)** | Auxiliary heads predict the next *k* tokens → better loss per token (data-efficiency). DeepSeek-V3 + nanogpt record (#53). | [DeepSeek-V3](https://arxiv.org/abs/2412.19437) |
+| **Intra-document attention masking** | Forbid attention across packed-doc boundaries — stops the model learning far-back = noise. Llama-3 data hygiene; 0 new params. Confirmed in nanogpt (EoS alignment, #26). | [Llama 3](https://arxiv.org/abs/2407.21783) |
+| **Hashed / bigram embeddings** | Replace the full `49 k × d` table (≈most of the params at small N) with token/bigram-hashed lookups into a small shared table. Attacks our biggest param sink. nanogpt record (#62/#83). | [parameter-golf](https://github.com/openai/parameter-golf) · [Hash emb 1709.03933](https://arxiv.org/abs/1709.03933) |
+| **Smaller-vocab tokenizer** | At small N the 49 k embedding dominates params; a ~half-size vocab at equal bytes/token frees budget for depth/width. | [TokenMonster](https://github.com/alasdairforsythe/tokenmonster) |
+| **CaseOps (bijective case factoring)** | Pull capitalization into a side channel so the vocab doesn't waste capacity on `the/The/THE`. Cheap input transform, shrinks effective vocab. | [parameter-golf](https://github.com/openai/parameter-golf) |
+| **Quantization-aware training (int4–6 / ternary)** | Train so weights survive low-bit packing (GPTQ / Hessian-aware). Scores capacity *per byte* — a fixed-size release holds more model. The winning parameter-golf lever. | [parameter-golf](https://github.com/openai/parameter-golf) · [GPTQ 2210.17323](https://arxiv.org/abs/2210.17323) |
+| **Paired-head Q/K orthogonalization** | Orthogonalize Q,K in *pairs of heads* instead of per full matrix — cheap attention conditioning. nanogpt record (#80). | [nanogpt](https://github.com/KellerJordan/modded-nanogpt) |
+| **Asymmetric layer composition** | Drop the first attention layer and first MLP layer — deep stacks don't need symmetric attn+MLP everywhere; frees params at ~zero cost. nanogpt records (#30/#35). | [nanogpt](https://github.com/KellerJordan/modded-nanogpt) |
+| **Test-time training** | Per-document parameter nudging at inference — 2026 nanogpt record. Genuine mechanism, but complex / inference-side. | [nanogpt](https://github.com/KellerJordan/modded-nanogpt) |
+
+#### B. Recipe & hyperparameter levers (cheaper, lower ceiling)
+
+Training-side knobs, schedules, optimizer swaps, and data — quick to try, but "just sweeps."
+
+| Idea | What it might do | Source |
+|---|---|---|
+| **Full muP** | Maximal-update parameterization for HP transfer — tune LR/init once at 8M, carry to 135M without re-tuning. Makes the whole ladder→135M extrapolation valid. | [muP](https://arxiv.org/abs/2203.03466) |
+| **WSD learning-rate schedule** | Warmup → long stable → short decay-to-zero. SmolLM2 / MiniCPM recipe; our champion found the model "update-starved," which WSD directly addresses. Confirmed in nanogpt (terminal-LR decay, #19). | [MiniCPM](https://arxiv.org/abs/2404.06395) |
+| **AdaMuon / NorMuon** | Per-parameter adaptive scaling on top of Muon — claimed +30–40% efficiency. Drop-in optimizer swap; NorMuon is in the nanogpt record (#41). | [AdaMuon](https://arxiv.org/abs/2507.11005) |
+| **Muon weight-decay + update-scale sweep** | The two knobs that keep Muon stable at scale (Moonshot recipe); WD is unswept here. | [Muon is Scalable](https://arxiv.org/abs/2502.16982) |
+| **Separate (higher) embedding LR** | Embeddings want a much larger LR than the matrices; decoupling it is a cheap, real nanogpt win. | [nanogpt](https://github.com/KellerJordan/modded-nanogpt) |
+| **Batch-size ramp** | Start small, grow the batch through training — better early-step efficiency at fixed token budget. nanogpt record (#46). | [nanogpt](https://github.com/KellerJordan/modded-nanogpt) |
+| **Context-length curriculum** | Train short sequences first, lengthen later — faster early tokens/sec, then long-range once stable. nanogpt record (#72). | [nanogpt](https://github.com/KellerJordan/modded-nanogpt) |
+| **Long-short SWA + window warmup + YaRN** | Sliding-window warmup schedule + YaRN length extension on top of existing SWA. nanogpt records (#31). | [nanogpt](https://github.com/KellerJordan/modded-nanogpt) |
+| **FineWeb-Edu data swap** | *Data*, not architecture. SmolLM2's real edge is FineWeb-Edu/DCLM filtering; at a fixed token budget this likely dwarfs any single architecture lever. | [FineWeb-Edu](https://arxiv.org/abs/2406.17557) |
