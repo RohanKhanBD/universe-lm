@@ -16,6 +16,24 @@ A high-performance codebase for LLM research, pretraining, and optimization: tes
 - `configs/`: Hyperparameter and dataset configurations.
 - `utils/`: Logging, plotting, and helper functions.
 
+## 🧪 Experiments You Can Run (donate GPU time)
+
+Each experiment lives on its own branch, fully wired and ready to run. **If you
+have a spare GPU**, pick one, run the paired control + treatment (one command
+each, `seed=42`), and report the within-box Δ back via an issue or
+[Discord](https://discord.gg/6AbXGpKTwN). Every datapoint helps us find the
+recipe that scales to a 135M model beating SmolLM2-135M.
+
+Open the branch — its README has the exact commands and a copy-paste prompt for
+your AI coding agent.
+
+| Experiment | What it tests | Smallest run | Branch |
+|---|---|---|---|
+| **Attention Residuals (AttnRes)** | Replace the fixed inter-layer residual with softmax attention over depth ([arXiv:2603.15031](https://arxiv.org/abs/2603.15031)). A depth lever — should help more as layers grow. | ~1 hr (8M rung) | [`experiment/attn-res-v1`](https://github.com/vukrosic/universe-lm/tree/experiment/attn-res-v1) |
+
+*Want to add your own? Branch from `main`, wire the idea behind a config flag,
+add a branch README with the run commands, and open a PR adding a row here.*
+
 ## 🏁 The Speedrun
 
 **Race to train the best 10M LLM in ~33 minutes — every win builds toward a fully-open 135M model that beats [SmolLM2-135M](https://huggingface.co/HuggingFaceTB/SmolLM2-135M).**
